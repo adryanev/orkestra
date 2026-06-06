@@ -42,7 +42,7 @@ func NewRunner(wm *workspace.Manager) *Runner {
 }
 
 // Run executes an agent command in a given workspace.
-func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume bool) (*SessionInfo, error) {
+func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume bool, stream bool) (*SessionInfo, error) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -56,7 +56,7 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 		cmdArgs = append(cmdArgs, "--resume")
 	}
 
-	sessionInfo, err := r.executeAgent(ws.WorktreePath, agent, cmdArgs)
+	sessionInfo, err := r.executeAgent(ws.WorktreePath, agent, cmdArgs, stream)
 	if err != nil {
 		return nil, fmt.Errorf("agent execution failed for workspace %s: %w", workspaceID, err)
 	}
@@ -81,7 +81,7 @@ func (r *Runner) Stop(workspaceID string) error {
 	return nil
 }
 
-func (r *Runner) executeAgent(worktreePath string, agent AgentType, args []string) (*SessionInfo, error) {
+func (r *Runner) executeAgent(worktreePath string, agent AgentType, args []string, stream bool) (*SessionInfo, error) {
 	var cmdName string
 	codexResume := false
 

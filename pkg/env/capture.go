@@ -2,12 +2,13 @@ package env
 
 import (
 	"bufio"
-	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 )
 
+// ShellEnv holds captured user shell environment.
 type ShellEnv struct {
 	Path       string
 	ClaudePath string
@@ -15,58 +16,63 @@ type ShellEnv struct {
 	AllVars    map[string]string
 }
 
-// Captured returns cached shell environment from login shell.
-// Uses sync.OnceValue for lazy initialization.
+// Captured returns cached shell environment from an interactive login shell.
+// Uses sync.OnceValue for one-time lazy init (Go 1.21+).
+// This ensures spawned agent processes get the same PATH and env vars
+// as a regular terminal session (nvm/fnm paths, GOPATH, etc.).
 var Captured = sync.OnceValue(func() *ShellEnv {
-	// Run: zsh -lic '/usr/bin/env'
-	cmd := exec.Command("zsh", "-lic", "/usr/bin/env")
-	stdout, err := cmd.StdoutPipe()
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/zsh"
+	}
+
+	// Run login shell to capture full env
+	cmd := exec.Command(shell, "-lic", "/usr/bin/env")
+	out, err := cmd.Output()
 	if err != nil {
-		// In a real application, this should be logged or handled more gracefully.
-		panic(fmt.Sprintf("failed to create stdout pipe: %v", err))
-	}
-
-	// Start the command
-	if err := cmd.Start(); err != nil {
-		panic(fmt.Sprintf("failed to start command: %v", err))
-	}
-
-	// Read the output line by line
-	scanner := bufio.NewScanner(stdout)
-	vars := make(map[string]string)
-	var claudePath, codexPath string
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			key, value := parts[0], parts[1]
-			vars[key] = value
-			switch key {
-			case "PATH":
-				vars[key] = value // Store the full PATH
-			// We'll resolve claude and codex paths later if needed, or rely on PATH
-			}
+		// Fallback: capture current env
+		return &ShellEnv{
+			AllVars: envMapFromCurrent(),
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		panic(fmt.Sprintf("error reading stdout: %v", err))
+	allVars := make(map[string]string)
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if idx := strings.IndexByte(line, '='); idx > 0 {
+			key := line[:idx]
+			val := line[idx+1:]
+			// Skip shell internals
+			if strings.HasPrefix(key, "_") || key == "SHLVL" || key == "ZSH_EVAL_CONTEXT" {
+				continue
+			}
+			allVars[key] = val
+		}
 	}
 
-	// Wait for the command to finish
-	if err := cmd.Wait(); err != nil {
-		panic(fmt.Sprintf("command finished with error: %v", err))
-	}
+	// Resolve claude binary path
+	claudeOut, _ := exec.Command(shell, "-lic", "command -v claude").Output()
+	claudePath := strings.TrimSpace(string(claudeOut))
 
-	// Resolve paths for 'claude' and 'codex' if they exist in PATH
-	claudePath, _ = exec.LookPath("claude")
-	codexPath, _ = exec.LookPath("codex")
+	// Resolve codex binary path
+	codexOut, _ := exec.Command(shell, "-lic", "command -v codex").Output()
+	codexPath := strings.TrimSpace(string(codexOut))
 
 	return &ShellEnv{
-		Path:       vars["PATH"],
+		Path:       allVars["PATH"],
 		ClaudePath: claudePath,
 		CodexPath:  codexPath,
-		AllVars:    vars,
+		AllVars:    allVars,
 	}
 })
+
+func envMapFromCurrent() map[string]string {
+	m := make(map[string]string)
+	for _, e := range os.Environ() {
+		if idx := strings.IndexByte(e, '='); idx > 0 {
+			m[e[:idx]] = e[idx+1:]
+		}
+	}
+	return m
+}

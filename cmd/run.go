@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/adryanev/orkestra/pkg/gitauth"
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
@@ -13,6 +14,7 @@ var (
 	runWorkspace string
 	runPrompt    string
 	runAgent     string
+	runStream    bool
 )
 
 var runCmd = &cobra.Command{
@@ -32,12 +34,23 @@ var runCmd = &cobra.Command{
 			prompt = args[0]
 		}
 
+		// Resolve git auth if profile is set
+		ws, err := wm.GetWorkspace(runWorkspace)
+		if err == nil && ws.GhProfile != "" {
+			token, err := gitauth.ResolveToken(ws.GhProfile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to get token for profile %s: %v\n", ws.GhProfile, err)
+			} else if token != "" {
+				os.Setenv("GH_TOKEN", token)
+			}
+		}
+
 		agent := runner.Claude
 		if runAgent == "codex" {
 			agent = runner.Codex
 		}
 
-		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false)
+		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -70,4 +83,5 @@ func init() {
 	runCmd.Flags().StringVar(&runWorkspace, "workspace", "", "Workspace ID")
 	runCmd.Flags().StringVar(&runPrompt, "prompt", "", "Prompt text")
 	runCmd.Flags().StringVar(&runAgent, "agent", "claude", "Agent type (claude or codex)")
+	runCmd.Flags().BoolVar(&runStream, "stream", false, "Output raw NDJSON/JSONL instead of parsed text")
 }

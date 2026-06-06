@@ -36,8 +36,11 @@ Hermes (orchestrator)
 | **Session lifecycle** | Capture session_id/thread_id, save, resume later |
 | **Structured output** | Parse NDJSON (Claude) and JSONL (Codex) for text, usage, tool calls |
 | **Git worktree isolation** | Workspaces live in app data dir, zero files in managed repo |
-| **Git auth** | Per-process GH_TOKEN injection — never `gh auth switch` |
-| **MCP server** | Stdio-based server with tools: get_workspace_info, rename_branch, notify |
+| **Git auth** | Per-process GH_TOKEN injection via `gh auth token --user <profile>` — never `gh auth switch` |
+| **Streaming mode** | `orkestra run --stream` outputs raw NDJSON/JSONL for live consumption |
+| **Shell env capture** | Captures full user env from login shell (PATH, nvm/fnm, GOPATH) |
+| **MCP server** | Stdio-based server with tools: workspace info, rename branch, notify, LSP |
+| **LSP tools** | Go-to-definition, hover, references, diagnostics, rename via gopls |
 | **Todo management** | Kanban-style CRUD with JSON persistence |
 | **Process management** | Start, monitor, kill agent processes |
 
@@ -55,11 +58,12 @@ go build -o ~/.local/bin/orkestra ./main.go
 # Initialize
 orkestra init
 
-# Create a workspace
-orkestra workspace create --repo ~/code/myproject --name fix-auth
+# Create a workspace with GitHub auth profile
+orkestra workspace create --repo ~/code/myproject --name fix-auth --gh-profile my-org
 
-# Run an agent
+# Run an agent (with streaming for live NDJSON)
 orkestra run --workspace <id> --prompt "Fix the auth middleware" --agent claude
+orkestra run --workspace <id> --prompt "Fix it" --stream  # raw output
 
 # Resume a session
 orkestra resume --workspace <id> --prompt "Continue with tests"
@@ -73,7 +77,7 @@ orkestra todo list --status todo
 orkestra todo update --id <uuid> --status review
 orkestra todo delete --id <uuid>
 
-# MCP server
+# MCP server (start alongside an agent)
 orkestra mcp
 ```
 
@@ -88,15 +92,42 @@ orkestra mcp
   mcp/               — MCP config files
 
 orkestra             — CLI entrypoint
-├─ init              — Create ~/.orkestra/
-├─ workspace create  — Git worktree + register
-├─ workspace list    — List all workspaces
-├─ run               — Spawn agent (Claude/Codex)
-├─ resume            — Resume agent session
+├─ init              — Create ~/.orkestra/ + state files
+├─ workspace create  — Git worktree + register (with --gh-profile)
+├─ workspace list    — List all workspaces with profile info
+├─ run               — Spawn agent (Claude/Codex), optional --stream
+├─ resume            — Resume agent session from saved ID
 ├─ stop              — Kill agent process
-├─ mcp               — Start stdio MCP server
+├─ mcp               — Start stdio MCP server (LSP + workspace tools)
 └─ todo create/list/update/delete
 ```
+
+## Git Auth
+
+Per-process token injection. Never calls `gh auth switch` globally.
+
+```bash
+orkestra workspace create --repo ~/code/project --name fix --gh-profile my-org
+orkestra run --workspace <id> --prompt "..."  # GH_TOKEN injected automatically
+```
+
+Token resolved via: `gh auth token --user <profile>` and injected as `GH_TOKEN` env var.
+
+## Streaming Mode
+
+`orkestra run --stream` outputs the agent's raw NDJSON (Claude) or JSONL (Codex) directly to stdout instead of the parsed human-readable format. Hermes can consume this for live progress tracking.
+
+## LSP Tools (via MCP)
+
+The MCP server exposes these LSP tools for agents:
+
+- `lsp_goto_definition` — Find symbol definition
+- `lsp_hover` — Get type info and docs
+- `lsp_references` — Find all references
+- `lsp_diagnostics` — Get compiler errors/warnings
+- `lsp_rename` — Rename symbol across workspace
+
+Uses `gopls` under the hood, managed per-workspace.
 
 ## Comparison with Korlap
 
@@ -106,12 +137,12 @@ orkestra             — CLI entrypoint
 | UI | Desktop app (Svelte 5) | CLI + Hermes renders output |
 | Session streaming | Tauri Channel API | NDJSON/JSONL stdout parsing |
 | Process control | Native Rust PTY | os/exec with goroutine readers |
-| MCP server | Built-in HTTP API + register to agent | Stdio MCP server |
-| Shell env capture | OnceLock + login shell | Inherits Hermes env |
+| MCP server | Built-in HTTP API + register to agent | Stdio MCP server with LSP tools |
+| Shell env capture | OnceLock + login shell | sync.OnceValue + login shell |
 | Git auth | `gh auth token --user` | Same |
+| LSP integration | Agent-side via MCP tools | Via gopls + MCP tools |
 | Kanban | 4-column drag-drop UI | CLI todo commands |
 | Persistence | JSON files in app data dir | JSON files in ~/.orkestra/ |
-| LSP | Agent-side via MCP tools | Not yet |
 
 ## Design Decisions
 
@@ -120,6 +151,7 @@ orkestra             — CLI entrypoint
 - **Stdio MCP, not HTTP** — No port allocation, works in sandboxed agent contexts
 - **os/exec, not PTY** — `-p` / `exec` are pipe-friendly, no PTY overhead
 - **No ACP** — ACP heredoc stdin EOF kills the protocol; `-p` / `exec` are reliable
+- **Shell env from login shell** — Ensures nvm/fnm/GOPATH/etc are available
 
 ## License
 

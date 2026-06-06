@@ -15,6 +15,7 @@ import (
 // Server handles MCP communication over stdio.
 type Server struct {
 	workspaceManager *workspace.Manager
+	lspManager       *LspManager
 	stdin            *bufio.Scanner
 	stdout           io.Writer
 	mu               sync.Mutex
@@ -25,6 +26,7 @@ type Server struct {
 func NewServer(wm *workspace.Manager) *Server {
 	return &Server{
 		workspaceManager: wm,
+		lspManager:       NewLspManager(),
 		stdin:            bufio.NewScanner(os.Stdin),
 		stdout:           os.Stdout,
 		active:           true,
@@ -70,26 +72,56 @@ func (s *Server) Listen() {
 			filePath, _ := args["file_path"].(string)
 			line, _ := args["line"].(float64)
 			character, _ := args["character"].(float64)
-			result, errResp = lsp_goto_definition(filePath, int(line), int(character))
+			wsID, _ := args["workspace_id"].(string)
+			handle, err := s.lspManager.GetOrStart("", wsID)
+			if err != nil {
+				errResp = err
+			} else {
+				result, errResp = lspGotoDefinition(handle, filePath, int(line), int(character))
+			}
 		case "lsp_hover":
 			filePath, _ := args["file_path"].(string)
 			line, _ := args["line"].(float64)
 			character, _ := args["character"].(float64)
-			result, errResp = lsp_hover(filePath, int(line), int(character))
+			wsID, _ := args["workspace_id"].(string)
+			handle, err := s.lspManager.GetOrStart("", wsID)
+			if err != nil {
+				errResp = err
+			} else {
+				result, errResp = lspHover(handle, filePath, int(line), int(character))
+			}
 		case "lsp_references":
 			filePath, _ := args["file_path"].(string)
 			line, _ := args["line"].(float64)
 			character, _ := args["character"].(float64)
-			result, errResp = lsp_references(filePath, int(line), int(character))
+			wsID, _ := args["workspace_id"].(string)
+			handle, err := s.lspManager.GetOrStart("", wsID)
+			if err != nil {
+				errResp = err
+			} else {
+				result, errResp = lspReferences(handle, filePath, int(line), int(character))
+			}
 		case "lsp_diagnostics":
 			filePath, _ := args["file_path"].(string)
-			result, errResp = lsp_diagnostics(filePath)
+			wsID, _ := args["workspace_id"].(string)
+			handle, err := s.lspManager.GetOrStart("", wsID)
+			if err != nil {
+				errResp = err
+			} else {
+				result, errResp = lspDiagnostics(handle, filePath)
+			}
 		case "lsp_rename":
 			filePath, _ := args["file_path"].(string)
 			line, _ := args["line"].(float64)
 			character, _ := args["character"].(float64)
 			newName, _ := args["new_name"].(string)
-			result, errResp = lsp_rename(filePath, int(line), int(character), newName)
+			wsID, _ := args["workspace_id"].(string)
+			handle, err := s.lspManager.GetOrStart("", wsID)
+			if err != nil {
+				errResp = err
+			} else {
+				result, errResp = lspRename(handle, filePath, int(line), int(character), newName)
+			}
 		default:
 			errResp = fmt.Errorf("unknown tool: %s", toolName)
 		}

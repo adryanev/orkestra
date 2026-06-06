@@ -42,7 +42,7 @@ var resumeCmd = &cobra.Command{
 			a = runner.Codex
 		}
 
-		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true)
+		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)

@@ -25,6 +25,7 @@ type Workspace struct {
 	WorktreePath string `json:"worktree_path"`
 	Branch      string `json:"branch"`
 	Status      string `json:"status"` // e.g., "active", "inactive", "error"
+	GhProfile   string `json:"gh_profile,omitempty"`
 }
 
 type Session struct {
@@ -146,7 +147,7 @@ func (m *Manager) Save() error {
 	return nil
 }
 
-func (m *Manager) CreateWorkspace(name, repoPath, branch string) (*Workspace, error) {
+func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Workspace, error) {
 	m.Lock()
 	defer m.Unlock()
 
@@ -174,6 +175,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch string) (*Workspace, er
 		WorktreePath: worktreePath,
 		Branch:      branch,
 		Status:      "active",
+		GhProfile:   ghProfile,
 	}
 
 	m.workspaces[id] = ws

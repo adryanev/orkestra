@@ -7,9 +7,10 @@ import (
 )
 
 var (
-	workspaceRepo   string
-	workspaceName   string
-	workspaceBranch string
+	workspaceRepo     string
+	workspaceName     string
+	workspaceBranch   string
+	workspaceGhProfile string
 )
 
 var workspaceCmd = &cobra.Command{
@@ -25,12 +26,15 @@ var workspaceCreateCmd = &cobra.Command{
 			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --repo is required")
 			return
 		}
-		ws, err := wm.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch)
+		ws, err := wm.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
 			return
 		}
 		fmt.Printf("Workspace created: %s (%s) at %s\n", ws.Name, ws.ID, ws.WorktreePath)
+		if ws.GhProfile != "" {
+			fmt.Printf("  GH Profile: %s\n", ws.GhProfile)
+		}
 	},
 }
 
@@ -48,7 +52,11 @@ var workspaceListCmd = &cobra.Command{
 			return
 		}
 		for _, ws := range workspaces {
-			fmt.Printf("  %s | %s | %s | %s\n", ws.ID[:8], ws.Name, ws.Branch, ws.Status)
+			profile := ws.GhProfile
+			if profile == "" {
+				profile = "-"
+			}
+			fmt.Printf("  %s | %s | %s | %s | %s\n", ws.ID[:8], ws.Name, ws.Branch, ws.Status, profile)
 		}
 	},
 }
@@ -57,6 +65,7 @@ func init() {
 	workspaceCreateCmd.Flags().StringVar(&workspaceRepo, "repo", "", "Repository path")
 	workspaceCreateCmd.Flags().StringVar(&workspaceName, "name", "", "Workspace name")
 	workspaceCreateCmd.Flags().StringVar(&workspaceBranch, "branch", "", "Branch name (optional)")
+	workspaceCreateCmd.Flags().StringVar(&workspaceGhProfile, "gh-profile", "", "GitHub auth profile")
 
 	workspaceCmd.AddCommand(workspaceCreateCmd)
 	workspaceCmd.AddCommand(workspaceListCmd)
