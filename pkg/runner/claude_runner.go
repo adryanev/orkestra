@@ -8,9 +8,11 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/adryanev/orkestra/pkg/env"
 	"github.com/adryanev/orkestra/pkg/gitauth"
+	"github.com/adryanev/orkestra/pkg/process"
 	"github.com/adryanev/orkestra/pkg/workspace"
 )
 
@@ -43,15 +45,18 @@ func NewRunner(wm *workspace.Manager) *Runner {
 	return &Runner{workspaceManager: wm}
 }
 
-// Run executes an agent command in a given workspace.
+// Run executes an agent command in a given workspace. The runner lock guards
+// only the short setup section; it is released before the agent executes so a
+// concurrent Stop is never blocked by a long-running agent (KTD4).
 func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume bool, stream bool) (*SessionInfo, error) {
 	r.Lock()
-	defer r.Unlock()
-
 	ws, err := r.workspaceManager.GetWorkspace(workspaceID)
 	if err != nil {
+		r.Unlock()
 		return nil, fmt.Errorf("failed to get workspace %s: %w", workspaceID, err)
 	}
+	worktreePath := ws.WorktreePath
+	ghProfile := ws.GhProfile
 
 	// On resume, look up the saved session/thread id so it can be passed to
 	// the agent. Without it, `--resume` has nothing to continue.
@@ -59,6 +64,7 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 	if resume {
 		s, err := r.workspaceManager.GetSession(workspaceID)
 		if err != nil {
+			r.Unlock()
 			return nil, fmt.Errorf("cannot resume workspace %s: no saved session (run it first): %w", workspaceID, err)
 		}
 		resumeSessionID = s.SessionID
@@ -68,37 +74,53 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 	// Resolve the GitHub token for the workspace profile so it can be injected
 	// into the agent environment (works for both run and resume).
 	var token string
-	if ws.GhProfile != "" {
-		t, err := gitauth.ResolveToken(ws.GhProfile)
+	if ghProfile != "" {
+		t, err := gitauth.ResolveToken(ghProfile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to resolve gh token for profile %s: %v\n", ws.GhProfile, err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to resolve gh token for profile %s: %v\n", ghProfile, err)
 		} else {
 			token = t
 		}
 	}
+	r.Unlock()
 
-	sessionInfo, err := r.executeAgent(ws.WorktreePath, agent, prompt, resumeSessionID, resumeThreadID, token, stream)
+	sessionInfo, err := r.executeAgent(workspaceID, worktreePath, agent, prompt, resumeSessionID, resumeThreadID, token, stream)
 	if err != nil {
-		return nil, fmt.Errorf("agent execution failed for workspace %s: %w", workspaceID, err)
+		return sessionInfo, fmt.Errorf("agent execution failed for workspace %s: %w", workspaceID, err)
 	}
 
 	// Update workspace status
 	if err := r.workspaceManager.UpdateWorkspaceStatus(workspaceID, "active"); err != nil {
-		fmt.Printf("Warning: failed to update workspace status for %s: %v\n", workspaceID, err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to update workspace status for %s: %v\n", workspaceID, err)
 	}
 
 	return sessionInfo, nil
 }
 
-// Stop terminates the agent process for a given workspace.
+// Stop terminates the agent process group recorded for a workspace. It reads
+// the persisted PID/PGID (written by a separate `run` process), signals the
+// group, then clears the process record and marks the workspace inactive. A
+// workspace with no recorded process is treated as already stopped.
 func (r *Runner) Stop(workspaceID string) error {
-	r.Lock()
-	defer r.Unlock()
+	s, err := r.workspaceManager.GetSession(workspaceID)
+	if err != nil {
+		// No session record at all: nothing to stop, idempotent success.
+		_ = r.workspaceManager.UpdateWorkspaceStatus(workspaceID, "inactive")
+		return nil
+	}
 
+	if s.PGID > 0 {
+		if err := process.TerminateGroup(s.PGID, process.DefaultGrace); err != nil {
+			return fmt.Errorf("failed to terminate agent for workspace %s: %w", workspaceID, err)
+		}
+	}
+
+	if err := r.workspaceManager.ClearSessionProcess(workspaceID); err != nil {
+		return fmt.Errorf("failed to clear process state for workspace %s: %w", workspaceID, err)
+	}
 	if err := r.workspaceManager.UpdateWorkspaceStatus(workspaceID, "inactive"); err != nil {
 		return fmt.Errorf("failed to update workspace status for %s: %w", workspaceID, err)
 	}
-
 	return nil
 }
 
@@ -175,7 +197,7 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID str
 	}
 }
 
-func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool) (*SessionInfo, error) {
+func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool) (*SessionInfo, error) {
 	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID)
 	if err != nil {
 		return nil, err
@@ -187,9 +209,14 @@ func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resu
 	// nvm/fnm/asdf-installed agent would otherwise be "not found".
 	binPath := resolveBinary(agent, shellEnv)
 
+	// The long-lived agent process is governed by `stop`/cancellation rather
+	// than a fixed deadline, so it uses exec.Command (no context timeout).
 	cmd := exec.Command(binPath, args...)
 	cmd.Dir = worktreePath
 	cmd.Env = composeEnv(shellEnv, token)
+	// Start the agent as its own process-group leader so a separate `stop`
+	// process can terminate it and all of its descendants together.
+	cmd.SysProcAttr = process.SysProcAttr()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -201,6 +228,13 @@ func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resu
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start agent process: %w", err)
+	}
+
+	// Persist the PID/PGID immediately so a concurrent `stop` can find the
+	// agent while it runs. With Setpgid the new group id equals the child PID.
+	pid := cmd.Process.Pid
+	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), pid, pid, time.Now().UnixNano()); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to persist agent process for %s: %v\n", workspaceID, err)
 	}
 
 	var sessionInfo SessionInfo
@@ -248,8 +282,22 @@ func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resu
 	// session id / usage) if it ran while the parser was still reading.
 	wg.Wait()
 
-	if err := cmd.Wait(); err != nil {
-		return &sessionInfo, fmt.Errorf("agent process finished with error: %w", err)
+	waitErr := cmd.Wait()
+
+	// The agent has exited: persist the captured session/thread id and clear
+	// the process record (AddSession writes zero-value PID/PGID) so a later
+	// `stop` treats the workspace as already stopped.
+	if err := r.workspaceManager.AddSession(workspace.Session{
+		WorkspaceID: workspaceID,
+		Agent:       string(agent),
+		SessionID:   sessionInfo.SessionID,
+		ThreadID:    sessionInfo.ThreadID,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to persist session for %s: %v\n", workspaceID, err)
+	}
+
+	if waitErr != nil {
+		return &sessionInfo, fmt.Errorf("agent process finished with error: %w", waitErr)
 	}
 
 	return &sessionInfo, nil

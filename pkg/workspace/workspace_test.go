@@ -123,3 +123,61 @@ func TestCreateWorkspaceRejectsNonRepo(t *testing.T) {
 		t.Error("expected error for non-git repo path, got nil")
 	}
 }
+
+// TestSessionProcessLifecycle verifies that the PID/PGID written at spawn
+// survive a reload, that a session-id update preserves them, and that clearing
+// zeroes them while keeping the id — the cross-process tracking contract for
+// run/stop.
+func TestSessionProcessLifecycle(t *testing.T) {
+	cfg := t.TempDir()
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.SetSessionProcess("ws1", "claude", 4242, 4242, 99); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload from disk into a fresh manager to prove cross-process durability.
+	reloaded, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := reloaded.GetSession("ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PID != 4242 || s.PGID != 4242 || s.StartedAt != 99 {
+		t.Errorf("process fields not persisted: %+v", s)
+	}
+
+	// An exit-time AddSession records the session id and zeroes process fields.
+	if err := reloaded.AddSession(Session{WorkspaceID: "ws1", Agent: "claude", SessionID: "sid-7"}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = reloaded.GetSession("ws1")
+	if s.SessionID != "sid-7" {
+		t.Errorf("session id = %q, want sid-7", s.SessionID)
+	}
+	if s.PID != 0 || s.PGID != 0 {
+		t.Errorf("process fields should be cleared after exit, got %+v", s)
+	}
+
+	// ClearSessionProcess on a record keeps the id but zeroes process fields.
+	if err := reloaded.SetSessionProcess("ws1", "claude", 100, 100, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.ClearSessionProcess("ws1"); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = reloaded.GetSession("ws1")
+	if s.PID != 0 || s.SessionID != "sid-7" {
+		t.Errorf("clear should zero pid and keep id, got %+v", s)
+	}
+
+	// Clearing a missing workspace is not an error.
+	if err := reloaded.ClearSessionProcess("nope"); err != nil {
+		t.Errorf("clearing missing session should be a no-op, got %v", err)
+	}
+}

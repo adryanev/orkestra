@@ -31,9 +31,14 @@ type Workspace struct {
 
 type Session struct {
 	WorkspaceID string `json:"workspace_id"`
-	Agent       string `json:"agent"` // e.g., "claude", "codex"
+	Agent       string `json:"agent"`                // e.g., "claude", "codex"
 	SessionID   string `json:"session_id,omitempty"` // agent-specific session ID
-	ThreadID    string `json:"thread_id,omitempty"` // agent-specific thread ID (for codex)
+	ThreadID    string `json:"thread_id,omitempty"`  // agent-specific thread ID (for codex)
+	// Process tracking for cross-process `stop`. PID/PGID identify the running
+	// agent; StartedAt (unix nanoseconds) records when `run` spawned it.
+	PID       int   `json:"pid,omitempty"`
+	PGID      int   `json:"pgid,omitempty"`
+	StartedAt int64 `json:"started_at,omitempty"`
 }
 
 type Manager struct {
@@ -266,6 +271,41 @@ func (m *Manager) AddSession(session Session) error {
 	return m.mutate(func() error {
 		s := session
 		m.sessions[s.WorkspaceID] = &s
+		return nil
+	})
+}
+
+// SetSessionProcess records the running agent's PID/PGID and start time for a
+// workspace so a separate `stop` process can signal it. It preserves any
+// existing session/thread id and agent on the record (a resume already has
+// one), creating a fresh record when none exists.
+func (m *Manager) SetSessionProcess(workspaceID, agent string, pid, pgid int, startedAt int64) error {
+	return m.mutate(func() error {
+		s, ok := m.sessions[workspaceID]
+		if !ok {
+			s = &Session{WorkspaceID: workspaceID}
+			m.sessions[workspaceID] = s
+		}
+		if agent != "" {
+			s.Agent = agent
+		}
+		s.PID = pid
+		s.PGID = pgid
+		s.StartedAt = startedAt
+		return nil
+	})
+}
+
+// ClearSessionProcess zeroes the process-tracking fields for a workspace,
+// leaving the session/thread id intact. A missing record is not an error so
+// callers can clear unconditionally on exit.
+func (m *Manager) ClearSessionProcess(workspaceID string) error {
+	return m.mutate(func() error {
+		if s, ok := m.sessions[workspaceID]; ok {
+			s.PID = 0
+			s.PGID = 0
+			s.StartedAt = 0
+		}
 		return nil
 	})
 }

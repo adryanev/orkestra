@@ -16,19 +16,11 @@ var stopCmd = &cobra.Command{
 			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --workspace is required")
 			os.Exit(1)
 		}
+		// The runner signals the agent's process group, clears process state,
+		// and marks the workspace inactive (all under the cross-process lock).
 		if err := agentRunner.Stop(stopWorkspace); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
-		}
-		// Update workspace status to inactive
-		ws, err := wm.GetWorkspace(stopWorkspace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not get workspace: %v\n", err)
-		} else {
-			ws.Status = "inactive"
-			if err := wm.Save(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to save workspace status: %v\n", err)
-			}
 		}
 		fmt.Printf("Workspace %s stopped\n", stopWorkspace)
 	},

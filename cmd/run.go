@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/adryanev/orkestra/pkg/runner"
-	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -46,25 +45,14 @@ var runCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		// The runner persists the session id and clears process state on exit,
+		// so the command only reports it.
 		if sessionInfo != nil {
 			if sessionInfo.SessionID != "" {
 				fmt.Printf("Session: %s\n", sessionInfo.SessionID)
 			}
 			if sessionInfo.ThreadID != "" {
 				fmt.Printf("Thread: %s\n", sessionInfo.ThreadID)
-			}
-			// Save session
-			s := workspace.Session{
-				WorkspaceID: runWorkspace,
-				Agent:       "claude",
-				SessionID:   sessionInfo.SessionID,
-				ThreadID:    sessionInfo.ThreadID,
-			}
-			if runAgent == "codex" {
-				s.Agent = "codex"
-			}
-			if err := wm.AddSession(s); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to save session: %v\n", err)
 			}
 		}
 	},

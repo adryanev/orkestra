@@ -6,20 +6,18 @@ import (
 	"path/filepath"
 
 	"github.com/adryanev/orkestra/pkg/mcp"
-	"github.com/adryanev/orkestra/pkg/process"
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-var ( 
-	cfgFile string
-	configDir string
-	wm *workspace.Manager
-	pm *process.ProcessManager
+var (
+	cfgFile     string
+	configDir   string
+	wm          *workspace.Manager
 	agentRunner *runner.Runner
-	mcpServer *mcp.Server
+	mcpServer   *mcp.Server
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -38,7 +36,6 @@ running agents, and interacting with them via the MCP protocol.`,
 			return fmt.Errorf("failed to initialize workspace manager: %w", err)
 		}
 
-		pm = process.NewProcessManager()
 		agentRunner = runner.NewRunner(wm)
 		mcpServer = mcp.NewServer(wm)
 
