@@ -10,11 +10,39 @@ import (
 	"sync"
 	"time"
 
+	"context"
+
 	"github.com/adryanev/orkestra/pkg/env"
 	"github.com/adryanev/orkestra/pkg/gitauth"
+	"github.com/adryanev/orkestra/pkg/mcp"
 	"github.com/adryanev/orkestra/pkg/process"
 	"github.com/adryanev/orkestra/pkg/workspace"
 )
+
+// codexMCPTimeout bounds the codex mcp add/remove calls.
+const codexMCPTimeout = 15 * time.Second
+
+// codexRegisterMCP registers the orkestra MCP server with codex under name,
+// bound to workspaceID. It removes any prior entry first so the operation is
+// idempotent.
+func codexRegisterMCP(name, orkestraBin, workspaceID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), codexMCPTimeout)
+	defer cancel()
+	// Best-effort removal of a stale entry; ignore its error.
+	_ = exec.CommandContext(ctx, "codex", "mcp", "remove", name).Run()
+	add := exec.CommandContext(ctx, "codex", "mcp", "add", name, "--", orkestraBin, "mcp", "--workspace", workspaceID)
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// codexUnregisterMCP removes the orkestra MCP server registration after a run.
+func codexUnregisterMCP(name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), codexMCPTimeout)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "codex", "mcp", "remove", name).Run()
+}
 
 // AgentType defines the type of agent being run.
 type AgentType string
@@ -181,9 +209,11 @@ func composeEnv(shell *env.ShellEnv, token string) []string {
 }
 
 // buildAgentArgs constructs the binary name and argument vector for an agent
-// invocation. Pulled out of executeAgent so the resume/session wiring is unit
-// testable without spawning a process.
-func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID string) (string, []string, error) {
+// invocation. Pulled out of executeAgent so the resume/session and MCP wiring
+// is unit testable without spawning a process. mcpConfigPath, when non-empty,
+// wires Claude's --mcp-config so the agent can call back into the orkestra MCP
+// server.
+func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mcpConfigPath string) (string, []string, error) {
 	switch agent {
 	case Claude:
 		args := []string{"--output-format", "stream-json", "--verbose", "-p", prompt}
@@ -192,7 +222,12 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID str
 			args = append(args, "--resume", resumeSessionID)
 		}
 		args = append(args, "--permission-mode", "bypassPermissions")
-		args = append(args, "--disallowedTools", "EnterWorktree,ExitWorktree")
+		// Disable the agent's built-in LSP tool so the orkestra LSP tools are
+		// used instead (orkestra manages LSP centrally, as Korlap does).
+		args = append(args, "--disallowedTools", "EnterWorktree,ExitWorktree,LSP")
+		if mcpConfigPath != "" {
+			args = append(args, "--mcp-config", mcpConfigPath)
+		}
 		return "claude", args, nil
 
 	case Codex:
@@ -208,7 +243,28 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID str
 }
 
 func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool) (*SessionInfo, error) {
-	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID)
+	// Wire the orkestra MCP server into the agent so it can call back. Claude
+	// receives an --mcp-config file; Codex is registered before the run and
+	// unregistered after exit.
+	orkestraBin, _ := os.Executable()
+	var mcpConfigPath string
+	if agent == Claude && orkestraBin != "" {
+		if p, err := mcp.WriteClaudeConfig(r.workspaceManager.ConfigDir(), workspaceID, orkestraBin); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write MCP config for %s: %v\n", workspaceID, err)
+		} else {
+			mcpConfigPath = p
+		}
+	}
+	if agent == Codex && orkestraBin != "" {
+		name := mcp.CodexServerName(workspaceID)
+		if err := codexRegisterMCP(name, orkestraBin, workspaceID); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to register Codex MCP server: %v\n", err)
+		} else {
+			defer codexUnregisterMCP(name)
+		}
+	}
+
+	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID, mcpConfigPath)
 	if err != nil {
 		return nil, err
 	}

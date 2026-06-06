@@ -69,7 +69,7 @@ func TestResolveBinary(t *testing.T) {
 }
 
 func TestBuildAgentArgsClaudeFresh(t *testing.T) {
-	name, args, err := buildAgentArgs(Claude, "do it", "", "")
+	name, args, err := buildAgentArgs(Claude, "do it", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,10 +82,30 @@ func TestBuildAgentArgsClaudeFresh(t *testing.T) {
 	if !slices.Contains(args, "bypassPermissions") {
 		t.Error("missing permission mode")
 	}
+	// The LSP tool is disabled so orkestra's LSP tools are used instead.
+	i := slices.Index(args, "--disallowedTools")
+	if i < 0 || i+1 >= len(args) || !strings.Contains(args[i+1], "LSP") {
+		t.Errorf("expected LSP in --disallowedTools, got %v", args)
+	}
+	// No MCP config path was supplied, so --mcp-config must be absent.
+	if slices.Contains(args, "--mcp-config") {
+		t.Error("--mcp-config should be absent when no path is given")
+	}
+}
+
+func TestBuildAgentArgsClaudeMCPConfig(t *testing.T) {
+	_, args, err := buildAgentArgs(Claude, "go", "", "", "/cfg/ws.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.Index(args, "--mcp-config")
+	if i < 0 || i+1 >= len(args) || args[i+1] != "/cfg/ws.json" {
+		t.Errorf("expected --mcp-config /cfg/ws.json in %v", args)
+	}
 }
 
 func TestBuildAgentArgsClaudeResume(t *testing.T) {
-	_, args, err := buildAgentArgs(Claude, "continue", "sess-123", "")
+	_, args, err := buildAgentArgs(Claude, "continue", "sess-123", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +116,7 @@ func TestBuildAgentArgsClaudeResume(t *testing.T) {
 }
 
 func TestBuildAgentArgsCodexResume(t *testing.T) {
-	_, args, err := buildAgentArgs(Codex, "continue", "", "thread-abc")
+	_, args, err := buildAgentArgs(Codex, "continue", "", "thread-abc", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +127,7 @@ func TestBuildAgentArgsCodexResume(t *testing.T) {
 }
 
 func TestBuildAgentArgsCodexFresh(t *testing.T) {
-	_, args, err := buildAgentArgs(Codex, "go", "", "")
+	_, args, err := buildAgentArgs(Codex, "go", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +140,7 @@ func TestBuildAgentArgsCodexFresh(t *testing.T) {
 }
 
 func TestBuildAgentArgsUnsupported(t *testing.T) {
-	if _, _, err := buildAgentArgs(AgentType("gemini"), "x", "", ""); err == nil {
+	if _, _, err := buildAgentArgs(AgentType("gemini"), "x", "", "", ""); err == nil {
 		t.Error("expected error for unsupported agent")
 	}
 }
