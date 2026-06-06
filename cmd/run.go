@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/spf13/cobra"
@@ -20,12 +19,10 @@ var runCmd = &cobra.Command{
 	Short: "Run an agent in a workspace",
 	Run: func(cmd *cobra.Command, args []string) {
 		if runWorkspace == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --workspace is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--workspace is required"))
 		}
 		if runPrompt == "" && len(args) == 0 {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: prompt required (--prompt or argument)")
-			os.Exit(1)
+			emitError(fmt.Errorf("prompt required (--prompt or argument)"))
 		}
 		prompt := runPrompt
 		if prompt == "" {
@@ -42,20 +39,35 @@ var runCmd = &cobra.Command{
 
 		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
 		// The runner persists the session id and clears process state on exit,
 		// so the command only reports it.
-		if sessionInfo != nil {
-			if sessionInfo.SessionID != "" {
-				fmt.Printf("Session: %s\n", sessionInfo.SessionID)
-			}
-			if sessionInfo.ThreadID != "" {
-				fmt.Printf("Thread: %s\n", sessionInfo.ThreadID)
-			}
-		}
+		reportSession(runWorkspace, sessionInfo)
 	},
+}
+
+// reportSession prints the captured session/thread id and usage from a run or
+// resume, in human or JSON form. The JSON shape is stable across both commands.
+func reportSession(workspaceID string, si *runner.SessionInfo) {
+	if si == nil {
+		return
+	}
+	if jsonOutput {
+		emitResult("", map[string]interface{}{
+			"workspace_id": workspaceID,
+			"session_id":   si.SessionID,
+			"thread_id":    si.ThreadID,
+			"usage":        si.Usage,
+		})
+		return
+	}
+	if si.SessionID != "" {
+		fmt.Printf("Session: %s\n", si.SessionID)
+	}
+	if si.ThreadID != "" {
+		fmt.Printf("Thread: %s\n", si.ThreadID)
+	}
 }
 
 func init() {

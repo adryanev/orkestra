@@ -14,25 +14,30 @@ var initCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		dir := getConfigDir()
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
 
-		// Create empty state files
-		initJSON := "{}"
+		// Create empty state files. Object-shaped state starts as {}, todos as
+		// a JSON array. All resolve under the one config directory (R7).
 		for _, f := range []string{"workspaces.json", "sessions.json"} {
 			path := filepath.Join(dir, f)
 			if _, err := os.Stat(path); os.IsNotExist(err) {
-				os.WriteFile(path, []byte(initJSON), 0644)
+				if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
+					emitError(err)
+				}
 			}
 		}
-		// todos.json is a JSON array, not an object.
 		todosPath := filepath.Join(dir, "todos.json")
 		if _, err := os.Stat(todosPath); os.IsNotExist(err) {
-			os.WriteFile(todosPath, []byte("[]"), 0644)
+			if err := os.WriteFile(todosPath, []byte("[]"), 0644); err != nil {
+				emitError(err)
+			}
 		}
 
-		fmt.Printf("Orkestra initialized at %s\n", dir)
+		emitResult(
+			fmt.Sprintf("Orkestra initialized at %s", dir),
+			map[string]string{"status": "initialized", "path": dir},
+		)
 	},
 }
 

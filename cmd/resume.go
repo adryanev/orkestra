@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/spf13/cobra"
@@ -19,12 +18,10 @@ var resumeCmd = &cobra.Command{
 	Short: "Resume a previous agent session",
 	Run: func(cmd *cobra.Command, args []string) {
 		if resumeWorkspace == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --workspace is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--workspace is required"))
 		}
 		if resumePrompt == "" && len(args) == 0 {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: prompt required")
-			os.Exit(1)
+			emitError(fmt.Errorf("prompt required (--prompt or argument)"))
 		}
 		prompt := resumePrompt
 		if prompt == "" {
@@ -38,12 +35,9 @@ var resumeCmd = &cobra.Command{
 
 		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
-		if sessionInfo != nil && sessionInfo.SessionID != "" {
-			fmt.Printf("Resumed session: %s\n", sessionInfo.SessionID)
-		}
+		reportSession(resumeWorkspace, sessionInfo)
 	},
 }
 

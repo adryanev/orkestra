@@ -3,13 +3,14 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
 )
 
 var (
-	workspaceRepo     string
-	workspaceName     string
-	workspaceBranch   string
+	workspaceRepo      string
+	workspaceName      string
+	workspaceBranch    string
 	workspaceGhProfile string
 )
 
@@ -23,18 +24,17 @@ var workspaceCreateCmd = &cobra.Command{
 	Short: "Create a new workspace",
 	Run: func(cmd *cobra.Command, args []string) {
 		if workspaceRepo == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --repo is required")
-			return
+			emitError(fmt.Errorf("--repo is required"))
 		}
 		ws, err := wm.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile)
 		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
-			return
+			emitError(err)
 		}
-		fmt.Printf("Workspace created: %s (%s) at %s\n", ws.Name, ws.ID, ws.WorktreePath)
+		human := fmt.Sprintf("Workspace created: %s (%s) at %s", ws.Name, ws.ID, ws.WorktreePath)
 		if ws.GhProfile != "" {
-			fmt.Printf("  GH Profile: %s\n", ws.GhProfile)
+			human += fmt.Sprintf("\n  GH Profile: %s", ws.GhProfile)
 		}
+		emitResult(human, ws)
 	},
 }
 
@@ -44,7 +44,14 @@ var workspaceListCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		workspaces, err := wm.ListWorkspaces()
 		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+			emitError(err)
+		}
+		if jsonOutput {
+			// Always emit an array (never null) for a stable shape.
+			if workspaces == nil {
+				workspaces = []workspace.Workspace{}
+			}
+			emitResult("", workspaces)
 			return
 		}
 		if len(workspaces) == 0 {

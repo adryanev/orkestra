@@ -56,12 +56,13 @@ var todoCreateCmd = &cobra.Command{
 		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
 			return append(todos, todo), nil
 		}); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
 
-		data, _ := json.MarshalIndent(todo, "", "  ")
-		fmt.Println(string(data))
+		emitResult(
+			fmt.Sprintf("Created todo %s: %s", todo.ID[:8], todo.Title),
+			todo,
+		)
 	},
 }
 
@@ -71,10 +72,9 @@ var todoListCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		statusFilter, _ := cmd.Flags().GetString("status")
 		wsFilter, _ := cmd.Flags().GetString("workspace")
-		asJSON, _ := cmd.Flags().GetBool("json")
 
 		todos := loadTodos()
-		var filtered []Todo
+		filtered := []Todo{}
 		for _, t := range todos {
 			if statusFilter != "" && t.Status != statusFilter {
 				continue
@@ -85,9 +85,8 @@ var todoListCmd = &cobra.Command{
 			filtered = append(filtered, t)
 		}
 
-		if asJSON {
-			data, _ := json.MarshalIndent(filtered, "", "  ")
-			fmt.Println(string(data))
+		if jsonOutput {
+			emitResult("", filtered)
 			return
 		}
 
@@ -111,8 +110,7 @@ var todoUpdateCmd = &cobra.Command{
 		status, _ := cmd.Flags().GetString("status")
 
 		if id == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --id is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--id is required"))
 		}
 
 		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
@@ -132,10 +130,9 @@ var todoUpdateCmd = &cobra.Command{
 			}
 			return nil, fmt.Errorf("todo %s not found", id)
 		}); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
-		fmt.Println("Todo updated")
+		emitResult("Todo updated", map[string]string{"id": id, "status": "updated"})
 	},
 }
 
@@ -145,8 +142,7 @@ var todoDeleteCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		id, _ := cmd.Flags().GetString("id")
 		if id == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --id is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--id is required"))
 		}
 
 		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
@@ -157,10 +153,9 @@ var todoDeleteCmd = &cobra.Command{
 			}
 			return nil, fmt.Errorf("todo %s not found", id)
 		}); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
-		fmt.Println("Todo deleted")
+		emitResult("Todo deleted", map[string]string{"id": id, "status": "deleted"})
 	},
 }
 
@@ -214,7 +209,6 @@ func init() {
 
 	todoListCmd.Flags().String("status", "", "Filter by status")
 	todoListCmd.Flags().String("workspace", "", "Filter by workspace")
-	todoListCmd.Flags().Bool("json", false, "JSON output")
 
 	todoUpdateCmd.Flags().String("id", "", "Todo ID")
 	todoUpdateCmd.Flags().String("title", "", "New title")
