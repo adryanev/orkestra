@@ -66,7 +66,7 @@ func TestConcurrentReadModifyWrite(t *testing.T) {
 				t.Errorf("acquire: %v", err)
 				return
 			}
-			defer lock.Release()
+			defer func() { _ = lock.Release() }()
 
 			m := map[string]int{}
 			cur, err := ReadFile(path)

@@ -147,7 +147,7 @@ func (m *Manager) mutate(apply func() error) error {
 	if err != nil {
 		return fmt.Errorf("failed to acquire state lock: %w", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	if err := m.readState(); err != nil {
 		return err

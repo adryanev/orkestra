@@ -41,8 +41,7 @@ var todoCreateCmd = &cobra.Command{
 		ws, _ := cmd.Flags().GetString("workspace")
 
 		if title == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --title is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--title is required"))
 		}
 
 		todo := Todo{
@@ -191,7 +190,7 @@ func mutateTodos(apply func([]Todo) ([]Todo, error)) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	todos := loadTodos()
 	updated, err := apply(todos)

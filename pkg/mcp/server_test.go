@@ -20,21 +20,16 @@ func newTestWorkspace(t *testing.T) (*workspace.Manager, string) {
 	t.Helper()
 	cfg := t.TempDir()
 	t.Setenv("XORKESTRA_HOME", cfg)
-	m, err := workspace.NewManager(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
 	worktree := filepath.Join(cfg, "wt")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Register the workspace directly via the session/registry path. There is
-	// no CreateWorkspace here because that needs a real git repo; the MCP tools
+	// Register the workspace directly via the registry file. There is no
+	// CreateWorkspace here because that needs a real git repo; the MCP tools
 	// only read the registry and the worktree path.
 	ws := workspace.Workspace{ID: "ws-test", Name: "test", RepoPath: cfg, WorktreePath: worktree, Branch: "main", Status: "active"}
 	writeWorkspaceRegistry(t, cfg, ws)
-	// Reload so the manager sees it.
-	m, err = workspace.NewManager(cfg)
+	m, err := workspace.NewManager(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
