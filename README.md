@@ -114,7 +114,7 @@ orkestra run --workspace <workspace-id> --agent codex --prompt "Fix the failing 
 | `orkestra resume` | Continues the saved session for a workspace |
 | `orkestra stop` | Stops the persisted agent process for a workspace |
 | `orkestra todo ...` | Creates, lists, updates, and deletes todos |
-| `orkestra mcp` | Starts the stdio MCP server |
+| `orkestra mcp --workspace <workspace-id>` | Starts the stdio MCP server for one workspace |
 
 ## Workspaces
 
@@ -160,18 +160,19 @@ The token is injected as `GH_TOKEN` only for the spawned agent process. Orkestra
 
 ## MCP and LSP
 
-`orkestra mcp` starts a stdio MCP server. It exposes workspace utilities and Go LSP tools for agents:
+`orkestra mcp --workspace <workspace-id>` starts a stdio MCP server bound to one workspace. It exposes workspace utilities and LSP tools for agents:
 
 - `get_workspace_info`
 - `rename_branch`
 - `notify`
 - `lsp_goto_definition`
 - `lsp_hover`
+- `lsp_find_references`
 - `lsp_references`
 - `lsp_diagnostics`
 - `lsp_rename`
 
-The LSP tools use `gopls` and are scoped to the workspace id passed in each tool request.
+The LSP tools use the configured language server for the file type and are scoped to the server's workspace.
 
 ## State Files
 

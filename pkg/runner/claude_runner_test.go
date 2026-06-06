@@ -2,11 +2,14 @@ package runner
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/adryanev/orkestra/pkg/env"
+	"github.com/adryanev/orkestra/pkg/workspace"
 )
 
 // TestSessionInfoOutputHasNoCredentials locks the run/resume output shape: the
@@ -137,7 +140,7 @@ func TestBuildAgentArgsCodexResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"exec", "resume", "thread-abc", "--json", "continue"}
+	want := []string{"exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "thread-abc", "continue"}
 	if !slices.Equal(args, want) {
 		t.Errorf("got %v, want %v", args, want)
 	}
@@ -159,6 +162,41 @@ func TestBuildAgentArgsCodexFresh(t *testing.T) {
 func TestBuildAgentArgsUnsupported(t *testing.T) {
 	if _, _, err := buildAgentArgs(AgentType("gemini"), "x", "", "", ""); err == nil {
 		t.Error("expected error for unsupported agent")
+	}
+}
+
+func testRunnerWithWorkspace(t *testing.T) (*Runner, *workspace.Manager, string) {
+	t.Helper()
+	cfg := t.TempDir()
+	worktree := filepath.Join(cfg, "wt")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m, id := registerWorkspace(t, cfg, worktree)
+	return NewRunner(m), m, id
+}
+
+func TestRunResumeRejectsMismatchedSavedAgent(t *testing.T) {
+	r, m, id := testRunnerWithWorkspace(t)
+	if err := m.AddSession(workspace.Session{WorkspaceID: id, Agent: string(Codex), ThreadID: "thread-abc"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := r.Run(id, Claude, "continue", true, false, false)
+	if err == nil || !strings.Contains(err.Error(), "saved session is for codex") {
+		t.Fatalf("expected wrong-agent resume error, got %v", err)
+	}
+}
+
+func TestRunResumeRequiresAgentSpecificID(t *testing.T) {
+	r, m, id := testRunnerWithWorkspace(t)
+	if err := m.AddSession(workspace.Session{WorkspaceID: id, Agent: string(Codex), SessionID: "sid-only"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := r.Run(id, Codex, "continue", true, false, false)
+	if err == nil || !strings.Contains(err.Error(), "no Codex thread_id") {
+		t.Fatalf("expected missing thread id error, got %v", err)
 	}
 }
 

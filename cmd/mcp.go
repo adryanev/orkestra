@@ -15,9 +15,12 @@ import (
 var mcpWorkspace string
 
 var mcpCmd = &cobra.Command{
-	Use:   "mcp",
+	Use:   "mcp --workspace <workspace-id>",
 	Short: "Start MCP server (stdio)",
 	Run: func(cmd *cobra.Command, args []string) {
+		if mcpWorkspace == "" {
+			mcpWorkspace = os.Getenv("XORKESTRA_WORKSPACE")
+		}
 		if mcpWorkspace == "" {
 			emitError(fmt.Errorf("--workspace is required"))
 		}

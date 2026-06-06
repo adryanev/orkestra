@@ -12,18 +12,18 @@ import (
 type LspServerConfig struct {
 	// ServerID is the stable identity used as the pool key and the merge key
 	// for user overrides.
-	ServerID string `json:"server_id"`
+	ServerID string `json:"server_id" mapstructure:"server_id"`
 	// Command is the server binary name, resolved against the captured PATH.
-	Command string `json:"command"`
+	Command string `json:"command" mapstructure:"command"`
 	// Args are passed to the server (commonly "--stdio").
-	Args []string `json:"args"`
+	Args []string `json:"args" mapstructure:"args"`
 	// Extensions are file extensions (without the leading dot) this server
 	// handles.
-	Extensions []string `json:"extensions"`
+	Extensions []string `json:"extensions" mapstructure:"extensions"`
 	// LanguageID is the LSP languageId sent in textDocument/didOpen.
-	LanguageID string `json:"language_id"`
+	LanguageID string `json:"language_id" mapstructure:"language_id"`
 	// InstallHint is returned to the caller when Command is not on PATH.
-	InstallHint string `json:"install_hint"`
+	InstallHint string `json:"install_hint" mapstructure:"install_hint"`
 }
 
 // builtinConfigs returns the language servers orkestra supports out of the box:

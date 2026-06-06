@@ -124,6 +124,7 @@ func (s *Server) register(srv *mcp.Server) {
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_goto_definition", Description: "Go to the definition of the symbol at a position."}, s.lspGotoDefinition)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_find_references", Description: "Find references to the symbol at a position."}, s.lspFindReferences)
+	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_references", Description: "Find references to the symbol at a position."}, s.lspFindReferences)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_hover", Description: "Show hover information for the symbol at a position."}, s.lspHover)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_workspace_symbols", Description: "Search workspace symbols by query."}, s.lspWorkspaceSymbols)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_diagnostics", Description: "Return diagnostics for a file."}, s.lspDiagnostics)
@@ -136,7 +137,17 @@ func text(s string) *mcp.CallToolResult {
 
 // --- workspace tools ---
 
+func (s *Server) requireBoundWorkspace(id string) error {
+	if id != s.workspaceID {
+		return fmt.Errorf("mcp server is bound to workspace %s, got %s", s.workspaceID, id)
+	}
+	return nil
+}
+
 func (s *Server) getWorkspaceInfo(ctx context.Context, _ *mcp.CallToolRequest, in workspaceIDInput) (*mcp.CallToolResult, workspaceInfoOutput, error) {
+	if err := s.requireBoundWorkspace(in.ID); err != nil {
+		return nil, workspaceInfoOutput{}, err
+	}
 	ws, err := s.wm.GetWorkspace(in.ID)
 	if err != nil {
 		return nil, workspaceInfoOutput{}, fmt.Errorf("failed to get workspace info: %w", err)
@@ -149,6 +160,9 @@ func (s *Server) getWorkspaceInfo(ctx context.Context, _ *mcp.CallToolRequest, i
 }
 
 func (s *Server) renameBranch(ctx context.Context, _ *mcp.CallToolRequest, in renameBranchInput) (*mcp.CallToolResult, messageOutput, error) {
+	if err := s.requireBoundWorkspace(in.ID); err != nil {
+		return nil, messageOutput{}, err
+	}
 	ws, err := s.wm.GetWorkspace(in.ID)
 	if err != nil {
 		return nil, messageOutput{}, fmt.Errorf("failed to get workspace: %w", err)
@@ -174,6 +188,9 @@ func (s *Server) renameBranch(ctx context.Context, _ *mcp.CallToolRequest, in re
 }
 
 func (s *Server) notify(ctx context.Context, _ *mcp.CallToolRequest, in notifyInput) (*mcp.CallToolResult, messageOutput, error) {
+	if err := s.requireBoundWorkspace(in.ID); err != nil {
+		return nil, messageOutput{}, err
+	}
 	path, err := notifyWorkspace(s.wm, in.ID, in.Message)
 	if err != nil {
 		return nil, messageOutput{}, err

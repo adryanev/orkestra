@@ -37,7 +37,7 @@ var runCmd = &cobra.Command{
 			agent = runner.Codex
 		}
 
-		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream)
+		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream, !jsonOutput)
 		if err != nil {
 			emitError(err)
 		}

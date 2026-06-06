@@ -25,12 +25,18 @@ const codexMCPTimeout = 15 * time.Second
 // codexRegisterMCP registers the orkestra MCP server with codex under name,
 // bound to workspaceID. It removes any prior entry first so the operation is
 // idempotent.
-func codexRegisterMCP(name, orkestraBin, workspaceID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), codexMCPTimeout)
-	defer cancel()
+func codexRegisterMCP(codexBin string, commandEnv []string, name, orkestraBin, workspaceID string) error {
 	// Best-effort removal of a stale entry; ignore its error.
-	_ = exec.CommandContext(ctx, "codex", "mcp", "remove", name).Run()
-	add := exec.CommandContext(ctx, "codex", "mcp", "add", name, "--", orkestraBin, "mcp", "--workspace", workspaceID)
+	removeCtx, removeCancel := context.WithTimeout(context.Background(), codexMCPTimeout)
+	remove := exec.CommandContext(removeCtx, codexBin, "mcp", "remove", name)
+	remove.Env = commandEnv
+	_ = remove.Run()
+	removeCancel()
+
+	addCtx, addCancel := context.WithTimeout(context.Background(), codexMCPTimeout)
+	defer addCancel()
+	add := exec.CommandContext(addCtx, codexBin, "mcp", "add", name, "--", orkestraBin, "mcp", "--workspace", workspaceID)
+	add.Env = commandEnv
 	if out, err := add.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -38,10 +44,12 @@ func codexRegisterMCP(name, orkestraBin, workspaceID string) error {
 }
 
 // codexUnregisterMCP removes the orkestra MCP server registration after a run.
-func codexUnregisterMCP(name string) {
+func codexUnregisterMCP(codexBin string, commandEnv []string, name string) {
 	ctx, cancel := context.WithTimeout(context.Background(), codexMCPTimeout)
 	defer cancel()
-	_ = exec.CommandContext(ctx, "codex", "mcp", "remove", name).Run()
+	cmd := exec.CommandContext(ctx, codexBin, "mcp", "remove", name)
+	cmd.Env = commandEnv
+	_ = cmd.Run()
 }
 
 // AgentType defines the type of agent being run.
@@ -79,7 +87,7 @@ func NewRunner(wm *workspace.Manager) *Runner {
 // Run executes an agent command in a given workspace. The runner lock guards
 // only the short setup section; it is released before the agent executes so a
 // concurrent Stop is never blocked by a long-running agent (KTD4).
-func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume bool, stream bool) (*SessionInfo, error) {
+func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume bool, stream bool, renderOutput bool) (*SessionInfo, error) {
 	r.Lock()
 	ws, err := r.workspaceManager.GetWorkspace(workspaceID)
 	if err != nil {
@@ -98,8 +106,24 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 			r.Unlock()
 			return nil, fmt.Errorf("cannot resume workspace %s: no saved session (run it first): %w", workspaceID, err)
 		}
+		if s.Agent != "" && s.Agent != string(agent) {
+			r.Unlock()
+			return nil, fmt.Errorf("cannot resume workspace %s with %s: saved session is for %s", workspaceID, agent, s.Agent)
+		}
 		resumeSessionID = s.SessionID
 		resumeThreadID = s.ThreadID
+		switch agent {
+		case Claude:
+			if resumeSessionID == "" {
+				r.Unlock()
+				return nil, fmt.Errorf("cannot resume workspace %s with claude: saved session has no Claude session_id", workspaceID)
+			}
+		case Codex:
+			if resumeThreadID == "" {
+				r.Unlock()
+				return nil, fmt.Errorf("cannot resume workspace %s with codex: saved session has no Codex thread_id", workspaceID)
+			}
+		}
 	}
 
 	// Resolve the GitHub token for the workspace profile so it can be injected
@@ -115,7 +139,7 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 	}
 	r.Unlock()
 
-	sessionInfo, err := r.executeAgent(workspaceID, worktreePath, agent, prompt, resumeSessionID, resumeThreadID, token, stream)
+	sessionInfo, err := r.executeAgent(workspaceID, worktreePath, agent, prompt, resumeSessionID, resumeThreadID, token, stream, renderOutput)
 	if err != nil {
 		return sessionInfo, fmt.Errorf("agent execution failed for workspace %s: %w", workspaceID, err)
 	}
@@ -236,7 +260,7 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mc
 	case Codex:
 		if resumeThreadID != "" {
 			// codex exec resume <thread_id> --json "prompt"
-			return "codex", []string{"exec", "resume", resumeThreadID, "--json", prompt}, nil
+			return "codex", []string{"exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resumeThreadID, prompt}, nil
 		}
 		return "codex", []string{"exec", "--json", "--dangerously-bypass-approvals-and-sandbox", prompt}, nil
 
@@ -245,33 +269,7 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mc
 	}
 }
 
-func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool) (*SessionInfo, error) {
-	// Wire the orkestra MCP server into the agent so it can call back. Claude
-	// receives an --mcp-config file; Codex is registered before the run and
-	// unregistered after exit.
-	orkestraBin, _ := os.Executable()
-	var mcpConfigPath string
-	if agent == Claude && orkestraBin != "" {
-		if p, err := mcp.WriteClaudeConfig(r.workspaceManager.ConfigDir(), workspaceID, orkestraBin); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write MCP config for %s: %v\n", workspaceID, err)
-		} else {
-			mcpConfigPath = p
-		}
-	}
-	if agent == Codex && orkestraBin != "" {
-		name := mcp.CodexServerName(workspaceID)
-		if err := codexRegisterMCP(name, orkestraBin, workspaceID); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to register Codex MCP server: %v\n", err)
-		} else {
-			defer codexUnregisterMCP(name)
-		}
-	}
-
-	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID, mcpConfigPath)
-	if err != nil {
-		return nil, err
-	}
-
+func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool, renderOutput bool) (*SessionInfo, error) {
 	shellEnv := env.Captured()
 	// Resolve the agent binary against the captured shell PATH. exec.Command
 	// resolves bare names against orkestra's own PATH, not cmd.Env, so an
@@ -279,6 +277,33 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	binPath := r.binOverride
 	if binPath == "" {
 		binPath = resolveBinary(agent, shellEnv)
+	}
+
+	// Wire the orkestra MCP server into the agent so it can call back. Claude
+	// receives an --mcp-config file; Codex is registered before the run and
+	// unregistered after exit.
+	orkestraBin, _ := os.Executable()
+	var mcpConfigPath string
+	if agent == Claude && orkestraBin != "" {
+		if p, err := mcp.WriteClaudeConfig(r.workspaceManager.ConfigDir(), workspaceID, orkestraBin); err != nil {
+			return nil, fmt.Errorf("failed to write MCP config for workspace %s: %w", workspaceID, err)
+		} else {
+			mcpConfigPath = p
+		}
+	}
+	if agent == Codex && orkestraBin != "" {
+		name := mcp.CodexServerName(workspaceID)
+		codexEnv := composeEnv(shellEnv, "")
+		if err := codexRegisterMCP(binPath, codexEnv, name, orkestraBin, workspaceID); err != nil {
+			return nil, fmt.Errorf("failed to register Codex MCP server: %w", err)
+		} else {
+			defer codexUnregisterMCP(binPath, codexEnv, name)
+		}
+	}
+
+	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID, mcpConfigPath)
+	if err != nil {
+		return nil, err
 	}
 
 	// The long-lived agent process is governed by `stop`/cancellation rather
@@ -306,7 +331,9 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	// agent while it runs. With Setpgid the new group id equals the child PID.
 	pid := cmd.Process.Pid
 	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), pid, pid, time.Now().UnixNano()); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to persist agent process for %s: %v\n", workspaceID, err)
+		_ = process.TerminateGroup(pid, process.DefaultGrace)
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("failed to persist agent process for workspace %s: %w", workspaceID, err)
 	}
 
 	var sessionInfo SessionInfo
@@ -332,6 +359,9 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 					}
 				} else {
 					display = captureClaude(line, &sessionInfo)
+				}
+				if !renderOutput {
+					continue
 				}
 				if stream {
 					// Raw passthrough: emit the original NDJSON/JSONL line.

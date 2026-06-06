@@ -163,7 +163,7 @@ func (p *LspPool) Rename(file string, line, character int, newName string) (stri
 		if err != nil {
 			return "", err
 		}
-		applied, err := applyWorkspaceEdit(raw)
+		applied, err := applyWorkspaceEdit(p.root, raw)
 		if err != nil {
 			return "", err
 		}
@@ -331,7 +331,7 @@ func (p *LspPool) formatDiagnostics(raw json.RawMessage) string {
 // applyWorkspaceEdit applies a WorkspaceEdit (either `changes` or
 // `documentChanges`) to files on disk, applying text edits per file bottom-up
 // so earlier offsets stay valid. It returns the number of edits applied.
-func applyWorkspaceEdit(raw json.RawMessage) (int, error) {
+func applyWorkspaceEdit(root string, raw json.RawMessage) (int, error) {
 	var edit struct {
 		Changes         map[string][]textEdit `json:"changes"`
 		DocumentChanges []struct {
@@ -347,10 +347,17 @@ func applyWorkspaceEdit(raw json.RawMessage) (int, error) {
 
 	perFile := map[string][]textEdit{}
 	for uri, edits := range edit.Changes {
-		perFile[uriToPath(uri)] = append(perFile[uriToPath(uri)], edits...)
+		path, err := workspaceEditPath(root, uri)
+		if err != nil {
+			return 0, err
+		}
+		perFile[path] = append(perFile[path], edits...)
 	}
 	for _, dc := range edit.DocumentChanges {
-		path := uriToPath(dc.TextDocument.URI)
+		path, err := workspaceEditPath(root, dc.TextDocument.URI)
+		if err != nil {
+			return 0, err
+		}
 		perFile[path] = append(perFile[path], dc.Edits...)
 	}
 
@@ -363,6 +370,16 @@ func applyWorkspaceEdit(raw json.RawMessage) (int, error) {
 		applied += n
 	}
 	return applied, nil
+}
+
+func workspaceEditPath(root, uri string) (string, error) {
+	path := filepath.Clean(uriToPath(uri))
+	root = filepath.Clean(root)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workspace edit target %q is outside the workspace", uri)
+	}
+	return path, nil
 }
 
 type textEdit struct {
@@ -379,6 +396,18 @@ func applyTextEdits(path string, edits []textEdit) (int, error) {
 	}
 	lines := strings.Split(string(data), "\n")
 
+	for _, e := range edits {
+		if e.Range.Start.Line < 0 || e.Range.Start.Line >= len(lines) {
+			return 0, fmt.Errorf("edit start line %d is outside %s", e.Range.Start.Line, path)
+		}
+		if e.Range.End.Line != e.Range.Start.Line {
+			return 0, fmt.Errorf("multi-line edit in %s is not supported", path)
+		}
+		if e.Range.Start.Character < 0 || e.Range.End.Character < e.Range.Start.Character {
+			return 0, fmt.Errorf("invalid edit range in %s", path)
+		}
+	}
+
 	sort.SliceStable(edits, func(i, j int) bool {
 		a, b := edits[i].Range.Start, edits[j].Range.Start
 		if a.Line != b.Line {
@@ -388,17 +417,9 @@ func applyTextEdits(path string, edits []textEdit) (int, error) {
 	})
 
 	for _, e := range edits {
-		if e.Range.Start.Line < 0 || e.Range.Start.Line >= len(lines) {
-			continue
-		}
-		if e.Range.End.Line != e.Range.Start.Line {
-			// Multi-line edits are uncommon for renames; skip defensively
-			// rather than corrupt the file.
-			continue
-		}
 		line := lines[e.Range.Start.Line]
-		start := clamp(e.Range.Start.Character, 0, len(line))
-		end := clamp(e.Range.End.Character, 0, len(line))
+		start := utf16ColumnByteOffset(line, e.Range.Start.Character)
+		end := utf16ColumnByteOffset(line, e.Range.End.Character)
 		if end < start {
 			end = start
 		}
@@ -411,12 +432,23 @@ func applyTextEdits(path string, edits []textEdit) (int, error) {
 	return len(edits), nil
 }
 
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
+func utf16ColumnByteOffset(s string, character int) int {
+	if character <= 0 {
+		return 0
 	}
-	if v > hi {
-		return hi
+	units := 0
+	for i, r := range s {
+		width := 1
+		if r > 0xFFFF {
+			width = 2
+		}
+		if units+width > character {
+			return i
+		}
+		units += width
+		if units == character {
+			return i + len(string(r))
+		}
 	}
-	return v
+	return len(s)
 }

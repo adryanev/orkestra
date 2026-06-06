@@ -37,9 +37,10 @@ type lspServer struct {
 	cfg  LspServerConfig
 	root string
 
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	waitOnce sync.Once
 
 	// Outbound write queue, drained by writeLoop. enqueue appends and signals;
 	// it never blocks on the pipe, so the reader is never blocked by a write.
@@ -326,10 +327,14 @@ func (s *lspServer) call(method string, params interface{}, timeout time.Duratio
 		}
 		return extractResult(raw)
 	case <-time.After(timeout):
-		s.handleMu.Lock()
-		delete(s.waiters, id)
-		s.handleMu.Unlock()
-		return nil, fmt.Errorf("lsp request %q timed out after %s", method, timeout)
+		err := fmt.Errorf("lsp request %q timed out after %s", method, timeout)
+		s.failAll(err)
+		_ = s.stdin.Close()
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+			go s.waitProcess()
+		}
+		return nil, err
 	}
 }
 
@@ -360,13 +365,20 @@ func (s *lspServer) Close() {
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
-	_ = s.cmd.Wait()
+	s.waitProcess()
 }
 
 func (s *lspServer) alive() bool {
 	s.handleMu.Lock()
 	defer s.handleMu.Unlock()
 	return !s.closed
+}
+
+func (s *lspServer) waitProcess() {
+	if s.cmd == nil {
+		return
+	}
+	s.waitOnce.Do(func() { _ = s.cmd.Wait() })
 }
 
 // --- document lifecycle ---

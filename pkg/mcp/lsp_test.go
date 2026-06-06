@@ -101,6 +101,19 @@ func TestDemuxByID(t *testing.T) {
 	}
 }
 
+func TestCallTimeoutMarksServerUnhealthy(t *testing.T) {
+	stdoutR, stdoutW := io.Pipe()
+	defer func() { _ = stdoutW.Close() }()
+	s := newTestServer(stdoutR, io.Discard)
+
+	if _, err := s.call("never-responds", nil, 20*time.Millisecond); err == nil {
+		t.Fatal("expected request timeout")
+	}
+	if s.alive() {
+		t.Fatal("timed-out server should be marked unhealthy")
+	}
+}
+
 func TestDiagnosticsRouting(t *testing.T) {
 	stdoutR, stdoutW := io.Pipe()
 	s := newTestServer(stdoutR, io.Discard)
@@ -270,6 +283,84 @@ func TestResolveFilePathRejectsTraversal(t *testing.T) {
 	}
 	if _, err := pool.resolveFilePath("sub/file.go"); err != nil {
 		t.Errorf("a path inside the workspace should resolve, got %v", err)
+	}
+}
+
+func TestApplyWorkspaceEditRejectsOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.go")
+	mustWrite(t, outside, "package main\n")
+
+	raw, err := json.Marshal(map[string]any{
+		"changes": map[string]any{
+			pathToURI(outside): []map[string]any{{
+				"range":   map[string]any{"start": map[string]any{"line": 0, "character": 0}, "end": map[string]any{"line": 0, "character": 0}},
+				"newText": "x",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := applyWorkspaceEdit(root, raw); err == nil {
+		t.Fatal("expected outside-workspace edit to be rejected")
+	}
+}
+
+func TestApplyWorkspaceEditCountsAppliedEditsAndUsesUTF16Columns(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	mustWrite(t, file, "alpha beta alpha\na🙂b\n")
+
+	raw, err := json.Marshal(map[string]any{
+		"changes": map[string]any{
+			pathToURI(file): []map[string]any{
+				{
+					"range":   map[string]any{"start": map[string]any{"line": 0, "character": 0}, "end": map[string]any{"line": 0, "character": 5}},
+					"newText": "one",
+				},
+				{
+					"range":   map[string]any{"start": map[string]any{"line": 0, "character": 11}, "end": map[string]any{"line": 0, "character": 16}},
+					"newText": "gamma",
+				},
+				{
+					"range":   map[string]any{"start": map[string]any{"line": 1, "character": 3}, "end": map[string]any{"line": 1, "character": 4}},
+					"newText": "c",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := applyWorkspaceEdit(root, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != 3 {
+		t.Fatalf("applied = %d, want 3", applied)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "one beta gamma\na🙂c\n" {
+		t.Fatalf("file content = %q", got)
+	}
+}
+
+func TestApplyTextEditsRejectsUnsupportedMultilineEdit(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "main.go")
+	mustWrite(t, file, "one\ntwo\n")
+
+	_, err := applyTextEdits(file, []textEdit{{
+		Range:   lspRange{Start: lspPosition{Line: 0, Character: 0}, End: lspPosition{Line: 1, Character: 1}},
+		NewText: "x",
+	}})
+	if err == nil {
+		t.Fatal("expected multi-line edit to be rejected")
 	}
 }
 

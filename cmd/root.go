@@ -70,14 +70,16 @@ func initConfig() {
 	// ~/.orkestra. Every state file resolves under this directory (R7).
 	configDir = resolveConfigDir()
 
+	vpr := viper.GetViper()
+	vpr.SetEnvPrefix("XORKESTRA")
+	vpr.AutomaticEnv()
+
 	if cfgFile != "" {
-		vpr := viper.New()
 		vpr.SetConfigFile(cfgFile)
 		if err := vpr.ReadInConfig(); err != nil {
 			cobra.CheckErr(err)
 		}
 	} else {
-		vpr := viper.New()
 		vpr.AddConfigPath(configDir)
 		vpr.SetConfigName(".orkestra")
 		vpr.SetConfigType("yaml")
@@ -90,10 +92,6 @@ func initConfig() {
 			}
 		}
 	}
-
-	vpr := viper.GetViper()
-	vpr.SetEnvPrefix("XORKESTRA")
-	vpr.AutomaticEnv()
 }
 
 // resolveConfigDir returns XORKESTRA_HOME when set, otherwise ~/.orkestra.

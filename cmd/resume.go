@@ -33,7 +33,7 @@ var resumeCmd = &cobra.Command{
 			a = runner.Codex
 		}
 
-		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false)
+		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput)
 		if err != nil {
 			emitError(err)
 		}

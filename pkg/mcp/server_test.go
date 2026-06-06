@@ -36,6 +36,32 @@ func newTestWorkspace(t *testing.T) (*workspace.Manager, string) {
 	return m, ws.ID
 }
 
+func newTwoTestWorkspaces(t *testing.T) (*workspace.Manager, string, string) {
+	t.Helper()
+	cfg := t.TempDir()
+	t.Setenv("XORKESTRA_HOME", cfg)
+	worktreeA := filepath.Join(cfg, "wt-a")
+	worktreeB := filepath.Join(cfg, "wt-b")
+	if err := os.MkdirAll(worktreeA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(worktreeB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{
+  "ws-a":{"id":"ws-a","name":"a","repo_path":"` + cfg + `","worktree_path":"` + worktreeA + `","branch":"main","status":"active"},
+  "ws-b":{"id":"ws-b","name":"b","repo_path":"` + cfg + `","worktree_path":"` + worktreeB + `","branch":"main","status":"active"}
+}`
+	if err := os.WriteFile(filepath.Join(cfg, "workspaces.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := workspace.NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m, "ws-a", "ws-b"
+}
+
 // writeWorkspaceRegistry writes a workspaces.json containing ws.
 func writeWorkspaceRegistry(t *testing.T, cfg string, ws workspace.Workspace) {
 	t.Helper()
@@ -84,7 +110,7 @@ func TestToolsListAdvertisesExpectedTools(t *testing.T) {
 	sort.Strings(got)
 	want := []string{
 		"get_workspace_info", "lsp_diagnostics", "lsp_find_references",
-		"lsp_goto_definition", "lsp_hover", "lsp_rename", "lsp_workspace_symbols",
+		"lsp_goto_definition", "lsp_hover", "lsp_references", "lsp_rename", "lsp_workspace_symbols",
 		"notify", "rename_branch",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -125,6 +151,26 @@ func TestGetWorkspaceInfoTool(t *testing.T) {
 	}
 	if !bad.IsError {
 		t.Error("expected a tool error for an unknown workspace id")
+	}
+}
+
+func TestWorkspaceToolsRejectDifferentBoundWorkspace(t *testing.T) {
+	m, boundID, otherID := newTwoTestWorkspaces(t)
+	s, err := NewServer(m, boundID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := connect(t, s)
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "get_workspace_info",
+		Arguments: map[string]any{"id": otherID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("expected bound server to reject a different workspace id")
 	}
 }
 
