@@ -26,10 +26,19 @@ func ResolveToken(profile string) (string, error) {
 // ResolveTokenContext resolves the token under the caller's context, so a
 // timeout or cancellation aborts the gh call rather than blocking.
 func ResolveTokenContext(ctx context.Context, profile string) (string, error) {
-	cmd := execCommandContext(ctx, "gh", "auth", "token", "--user", profile)
+	// With no profile, omit --user so gh uses its active account; passing an
+	// empty --user value makes gh fail.
+	args := []string{"auth", "token"}
+	if profile != "" {
+		args = append(args, "--user", profile)
+	}
+	cmd := execCommandContext(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve token for profile %q: %w", profile, err)
+		if profile != "" {
+			return "", fmt.Errorf("failed to resolve token for profile %q: %w", profile, err)
+		}
+		return "", fmt.Errorf("failed to resolve token: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

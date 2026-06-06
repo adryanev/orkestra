@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // LSP wire types (subset). Positions are 0-based on the wire; the tool boundary
@@ -398,6 +399,10 @@ type textEdit struct {
 // applyTextEdits rewrites path with edits applied. Edits are sorted to apply
 // from the end of the file backward so earlier edits do not shift later ranges.
 func applyTextEdits(path string, edits []textEdit) (int, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
@@ -434,7 +439,7 @@ func applyTextEdits(path string, edits []textEdit) (int, error) {
 		lines[e.Range.Start.Line] = line[:start] + e.NewText + line[end:]
 	}
 
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), fi.Mode().Perm()); err != nil {
 		return 0, err
 	}
 	return len(edits), nil
@@ -455,7 +460,7 @@ func utf16ColumnByteOffset(s string, character int) int {
 		}
 		units += width
 		if units == character {
-			return i + len(string(r))
+			return i + utf8.RuneLen(r)
 		}
 	}
 	return len(s)

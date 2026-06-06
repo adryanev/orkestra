@@ -466,7 +466,10 @@ func (m *Manager) RemoveWorkspace(id string, force bool) error {
 	if force {
 		args = []string{"worktree", "remove", "--force", worktreePath}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gitDetectTimeout)
+	// Worktree removal can be I/O-heavy on large repos, like creation; use the
+	// worktree timeout rather than the shorter detect timeout to avoid spurious
+	// failures.
+	ctx, cancel := context.WithTimeout(context.Background(), gitWorktreeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoPath

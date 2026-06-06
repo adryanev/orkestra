@@ -28,9 +28,14 @@ var resumeCmd = &cobra.Command{
 			prompt = args[0]
 		}
 
-		a := runner.Claude
-		if resumeAgent == "codex" {
+		var a runner.AgentType
+		switch resumeAgent {
+		case "claude":
+			a = runner.Claude
+		case "codex":
 			a = runner.Codex
+		default:
+			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", resumeAgent))
 		}
 
 		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput)

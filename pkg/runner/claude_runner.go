@@ -169,8 +169,12 @@ func (r *Runner) IsRunning(workspaceID string) bool {
 func (r *Runner) Stop(workspaceID string) error {
 	s, err := r.workspaceManager.GetSession(workspaceID)
 	if err != nil {
-		// No session record at all: nothing to stop, idempotent success.
-		_ = r.workspaceManager.UpdateWorkspaceStatus(workspaceID, "inactive")
+		// No session record at all: nothing to stop, idempotent success. Still
+		// surface a real status-write failure rather than reporting success
+		// while leaving the workspace status stale.
+		if err := r.workspaceManager.UpdateWorkspaceStatus(workspaceID, "inactive"); err != nil {
+			return fmt.Errorf("failed to update workspace status for %s: %w", workspaceID, err)
+		}
 		return nil
 	}
 
@@ -342,7 +346,12 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	startedAt, err := process.StartedAt(pid)
 	if err != nil {
 		_ = process.TerminateGroup(pid, process.DefaultGrace)
-		_ = cmd.Wait()
+		// A failed identity capture usually means the process already exited
+		// (missing binary, permission error, immediate crash). Surface that
+		// real exit error instead of masking it behind the identity message.
+		if waitErr := cmd.Wait(); waitErr != nil {
+			return nil, fmt.Errorf("agent process for workspace %s exited immediately: %w", workspaceID, waitErr)
+		}
 		return nil, fmt.Errorf("failed to capture agent process identity for workspace %s: %w", workspaceID, err)
 	}
 	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), pid, pid, startedAt); err != nil {

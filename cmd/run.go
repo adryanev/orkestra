@@ -32,9 +32,14 @@ var runCmd = &cobra.Command{
 		// Git-auth token resolution and injection happens inside the runner,
 		// so it applies to both run and resume.
 
-		agent := runner.Claude
-		if runAgent == "codex" {
+		var agent runner.AgentType
+		switch runAgent {
+		case "claude":
+			agent = runner.Claude
+		case "codex":
 			agent = runner.Codex
+		default:
+			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", runAgent))
 		}
 
 		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream, !jsonOutput)
@@ -67,6 +72,15 @@ func reportSession(workspaceID string, si *runner.SessionInfo) {
 	}
 	if si.ThreadID != "" {
 		fmt.Printf("Thread: %s\n", si.ThreadID)
+	}
+	if si.Usage.Model != "" || si.Usage.InputTokens != 0 || si.Usage.OutputTokens != 0 {
+		if si.Usage.Model != "" {
+			fmt.Printf("Usage: model=%s input_tokens=%d output_tokens=%d\n",
+				si.Usage.Model, si.Usage.InputTokens, si.Usage.OutputTokens)
+		} else {
+			fmt.Printf("Usage: input_tokens=%d output_tokens=%d\n",
+				si.Usage.InputTokens, si.Usage.OutputTokens)
+		}
 	}
 }
 

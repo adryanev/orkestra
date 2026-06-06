@@ -124,7 +124,6 @@ func (s *Server) register(srv *mcp.Server) {
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_goto_definition", Description: "Go to the definition of the symbol at a position."}, s.lspGotoDefinition)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_find_references", Description: "Find references to the symbol at a position."}, s.lspFindReferences)
-	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_references", Description: "Find references to the symbol at a position."}, s.lspFindReferences)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_hover", Description: "Show hover information for the symbol at a position."}, s.lspHover)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_workspace_symbols", Description: "Search workspace symbols by query."}, s.lspWorkspaceSymbols)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_diagnostics", Description: "Return diagnostics for a file."}, s.lspDiagnostics)
@@ -168,7 +167,7 @@ func (s *Server) renameBranch(ctx context.Context, _ *mcp.CallToolRequest, in re
 		return nil, messageOutput{}, fmt.Errorf("failed to get workspace: %w", err)
 	}
 	// Reject names git itself would reject before touching the repo (R20).
-	if err := validBranchName(s.root, in.NewBranch); err != nil {
+	if err := validBranchName(ctx, s.root, in.NewBranch); err != nil {
 		return nil, messageOutput{}, err
 	}
 
@@ -235,9 +234,12 @@ func lspText(out string, err error) (*mcp.CallToolResult, textOutput, error) {
 
 // validBranchName rejects names that git would reject, using
 // `git check-ref-format --branch` (R20).
-func validBranchName(dir, name string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
+func validBranchName(parent context.Context, dir, name string) error {
+	ctx, cancel := context.WithTimeout(parent, gitCmdTimeout)
 	defer cancel()
+	// `git check-ref-format --branch <name>` already treats the argument as a
+	// branch shorthand and rejects dash-prefixed names, so no `--` separator is
+	// needed (and check-ref-format does not accept one).
 	cmd := exec.CommandContext(ctx, "git", "check-ref-format", "--branch", name)
 	cmd.Dir = dir
 	if err := cmd.Run(); err != nil {

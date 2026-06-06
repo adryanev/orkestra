@@ -21,14 +21,20 @@ var initCmd = &cobra.Command{
 		// a JSON array. All resolve under the one config directory (R7).
 		for _, f := range []string{"workspaces.json", "sessions.json"} {
 			path := filepath.Join(dir, f)
-			if _, err := os.Stat(path); os.IsNotExist(err) {
+			if _, err := os.Stat(path); err != nil {
+				if !os.IsNotExist(err) {
+					emitError(err)
+				}
 				if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
 					emitError(err)
 				}
 			}
 		}
 		todosPath := filepath.Join(dir, "todos.json")
-		if _, err := os.Stat(todosPath); os.IsNotExist(err) {
+		if _, err := os.Stat(todosPath); err != nil {
+			if !os.IsNotExist(err) {
+				emitError(err)
+			}
 			if err := os.WriteFile(todosPath, []byte("[]"), 0644); err != nil {
 				emitError(err)
 			}
@@ -41,17 +47,12 @@ var initCmd = &cobra.Command{
 	},
 }
 
+// getConfigDir returns the resolved config directory, preferring an already
+// resolved configDir and otherwise falling back to the shared resolver so the
+// XORKESTRA_HOME / ~/.orkestra logic lives in one place (resolveConfigDir).
 func getConfigDir() string {
 	if configDir != "" {
 		return configDir
 	}
-	if home := os.Getenv("XORKESTRA_HOME"); home != "" {
-		return home
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	return filepath.Join(home, ".orkestra")
+	return resolveConfigDir()
 }

@@ -51,8 +51,9 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
+	// initConfig runs once via PersistentPreRunE; registering it with
+	// cobra.OnInitialize too would load config (and print "Using config file")
+	// twice per command.
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.orkestra/.orkestra.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit structured JSON output")
 

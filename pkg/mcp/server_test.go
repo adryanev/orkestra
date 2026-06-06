@@ -110,7 +110,7 @@ func TestToolsListAdvertisesExpectedTools(t *testing.T) {
 	sort.Strings(got)
 	want := []string{
 		"get_workspace_info", "lsp_diagnostics", "lsp_find_references",
-		"lsp_goto_definition", "lsp_hover", "lsp_references", "lsp_rename", "lsp_workspace_symbols",
+		"lsp_goto_definition", "lsp_hover", "lsp_rename", "lsp_workspace_symbols",
 		"notify", "rename_branch",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -235,11 +235,11 @@ func TestValidBranchNameRejectsBadNames(t *testing.T) {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	if err := validBranchName(dir, "feature/ok"); err != nil {
+	if err := validBranchName(context.Background(), dir, "feature/ok"); err != nil {
 		t.Errorf("valid name rejected: %v", err)
 	}
 	for _, bad := range []string{"bad branch", "with..dots", "-leading", "tail.lock"} {
-		if err := validBranchName(dir, bad); err == nil {
+		if err := validBranchName(context.Background(), dir, bad); err == nil {
 			t.Errorf("expected %q to be rejected", bad)
 		}
 	}

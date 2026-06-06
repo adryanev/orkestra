@@ -72,7 +72,10 @@ var todoListCmd = &cobra.Command{
 		statusFilter, _ := cmd.Flags().GetString("status")
 		wsFilter, _ := cmd.Flags().GetString("workspace")
 
-		todos := loadTodos()
+		todos, err := loadTodos()
+		if err != nil {
+			emitError(err)
+		}
 		filtered := []Todo{}
 		for _, t := range todos {
 			if statusFilter != "" && t.Status != statusFilter {
@@ -158,21 +161,21 @@ var todoDeleteCmd = &cobra.Command{
 	},
 }
 
-func loadTodos() []Todo {
+func loadTodos() ([]Todo, error) {
 	data, err := state.ReadFile(todoFile())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading todos: %v\n", err)
-		return []Todo{}
+		return nil, fmt.Errorf("error reading todos: %w", err)
 	}
 	if len(data) == 0 {
-		return []Todo{}
+		return []Todo{}, nil
 	}
 	var todos []Todo
 	if err := json.Unmarshal(data, &todos); err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing todos: %v\n", err)
-		return []Todo{}
+		// Do not coerce a parse failure into empty state: a subsequent save
+		// would overwrite the (recoverable) file with an empty list.
+		return nil, fmt.Errorf("error parsing todos: %w", err)
 	}
-	return todos
+	return todos, nil
 }
 
 func saveTodos(todos []Todo) {
@@ -192,7 +195,10 @@ func mutateTodos(apply func([]Todo) ([]Todo, error)) error {
 	}
 	defer func() { _ = lock.Release() }()
 
-	todos := loadTodos()
+	todos, err := loadTodos()
+	if err != nil {
+		return err
+	}
 	updated, err := apply(todos)
 	if err != nil {
 		return err

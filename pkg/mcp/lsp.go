@@ -21,6 +21,10 @@ import (
 // hang a tool call (R11).
 const defaultRequestTimeout = 20 * time.Second
 
+// maxMessageBytes caps a single Content-Length framed message so a malformed or
+// hostile header cannot drive an unbounded allocation and OOM the process.
+const maxMessageBytes = 50 * 1024 * 1024 // 50 MiB
+
 // lspServer is a running language-server process and the demultiplexing state
 // for its stdio JSON-RPC channel. A reader goroutine drains stdout and routes
 // each message to a waiting request, the diagnostics cache, or a null reply. A
@@ -490,6 +494,9 @@ func readMessage(r *bufio.Reader) (json.RawMessage, error) {
 	}
 	if contentLength < 0 {
 		return nil, fmt.Errorf("missing Content-Length header")
+	}
+	if contentLength > maxMessageBytes {
+		return nil, fmt.Errorf("Content-Length %d exceeds maximum allowed %d bytes", contentLength, maxMessageBytes)
 	}
 	body := make([]byte, contentLength)
 	if _, err := io.ReadFull(r, body); err != nil {

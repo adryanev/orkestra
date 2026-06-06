@@ -16,7 +16,7 @@ CLI tool + MCP server for managing isolated agent workspaces, running Claude Cod
 ~/.orkestra/
   workspaces.json        — workspace registry
   sessions.json          — session_id / thread_id per workspace
-  worktrees/<id>/        — git worktrees (cloned repos)
+  worktrees/<id>/        — git worktrees (linked working dirs sharing the repo object DB, not separate clones)
   mcp/<ws-id>.json       — MCP config files injected to agents
 
 orkestra                — CLI entrypoint

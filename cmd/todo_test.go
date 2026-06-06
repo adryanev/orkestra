@@ -19,8 +19,8 @@ func TestTodoCRUD(t *testing.T) {
 	t.Setenv("XORKESTRA_HOME", dir)
 
 	// Empty to start.
-	if got := loadTodos(); len(got) != 0 {
-		t.Fatalf("expected no todos, got %d", len(got))
+	if got, err := loadTodos(); err != nil || len(got) != 0 {
+		t.Fatalf("expected no todos, got %d (err=%v)", len(got), err)
 	}
 
 	// Create.
@@ -29,7 +29,10 @@ func TestTodoCRUD(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	todos := loadTodos()
+	todos, err := loadTodos()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(todos) != 1 || todos[0].Title != "first" {
 		t.Fatalf("create failed: %+v", todos)
 	}
@@ -41,8 +44,8 @@ func TestTodoCRUD(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if loadTodos()[0].Status != "done" {
-		t.Error("update did not persist")
+	if got, err := loadTodos(); err != nil || got[0].Status != "done" {
+		t.Errorf("update did not persist (err=%v)", err)
 	}
 
 	// Delete.
@@ -51,8 +54,8 @@ func TestTodoCRUD(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(loadTodos()) != 0 {
-		t.Error("delete did not persist")
+	if got, err := loadTodos(); err != nil || len(got) != 0 {
+		t.Errorf("delete did not persist (err=%v)", err)
 	}
 }
 

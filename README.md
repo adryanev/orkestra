@@ -12,10 +12,12 @@ Use it when a controller such as a developer shell, CI job, MCP client, Hermes, 
 | Agent execution | Runs Claude Code or Codex with the right prompt and working directory |
 | Session resume | Stores Claude `session_id` and Codex `thread_id` per workspace |
 | Streaming output | Emits parsed text by default or raw NDJSON/JSONL with `--stream` |
+| Process control | Persists PID, process group, and process-start identity so `stop` can verify the live agent before signaling |
 | GitHub auth | Injects `GH_TOKEN` per process from `gh auth token --user <profile>` |
 | Shell environment | Captures login-shell env so tools from nvm, fnm, asdf, Go, and similar managers are available |
 | MCP tools | Exposes workspace and LSP tools over stdio |
 | Todos | Stores a small workspace-aware task list in JSON |
+| Project knowledge | Keeps documented solutions in `docs/solutions/` and shared vocabulary in `CONCEPTS.md` |
 
 ## How It Works
 
@@ -57,7 +59,11 @@ The important idea is that Orkestra is a CLI with persistent state. While `run` 
 - Git, for worktree creation
 - Claude Code and/or Codex CLI, depending on which agent you run
 - GitHub CLI, only when using `--gh-profile`
-- `gopls`, only when using the Go LSP tools through MCP
+- Optional language servers when using MCP LSP tools:
+  - `gopls` for Go
+  - `typescript-language-server` for TypeScript and JavaScript
+  - `pyright-langserver` for Python
+  - `vscode-html-language-server` for HTML
 
 ## Installation
 
@@ -110,6 +116,7 @@ orkestra run --workspace <workspace-id> --agent codex --prompt "Fix the failing 
 | `orkestra init` | Creates the Orkestra state directory and initial JSON files |
 | `orkestra workspace create` | Creates a git worktree and registers it as a workspace |
 | `orkestra workspace list` | Lists registered workspaces |
+| `orkestra workspace remove` | Removes a workspace and its git worktree |
 | `orkestra run` | Starts Claude Code or Codex in a workspace |
 | `orkestra resume` | Continues the saved session for a workspace |
 | `orkestra stop` | Stops the persisted agent process for a workspace |
@@ -172,7 +179,9 @@ The token is injected as `GH_TOKEN` only for the spawned agent process. Orkestra
 - `lsp_diagnostics`
 - `lsp_rename`
 
-The LSP tools use the configured language server for the file type and are scoped to the server's workspace.
+The LSP tools use the configured language server for the file type and are scoped to the server's workspace. Server startup is pooled per workspace and language server. Concurrent calls for the same server share one in-flight start, while unrelated servers can proceed independently.
+
+If a language server is missing, Orkestra returns an install hint instead of hanging or failing the whole MCP session.
 
 ## State Files
 
@@ -183,6 +192,7 @@ Orkestra stores state in `~/.orkestra` by default:
   workspaces.json
   sessions.json
   todos.json
+  mcp/<workspace_id>.json
   worktrees/{workspace_id}/
 ```
 
@@ -191,6 +201,41 @@ Set `XORKESTRA_HOME` to use a different state directory:
 ```bash
 XORKESTRA_HOME=/tmp/orkestra orkestra init
 ```
+
+## Project Knowledge
+
+Orkestra keeps repo-local learning artifacts for future agents and maintainers:
+
+```text
+CONCEPTS.md
+docs/solutions/
+  integration-issues/
+  design-patterns/
+  build-config/
+```
+
+- `CONCEPTS.md` defines project-specific vocabulary such as Workspace, Agent Run, Agent Session, Process Identity, Bound MCP Server, and LSP Pool.
+- `docs/solutions/` records solved problems and reusable patterns with YAML frontmatter (`module`, `tags`, `problem_type`) so future work can search by area and failure mode.
+- Recent hardening notes cover real binary E2E testing, process identity checks before signaling, killing timed-out process groups, and single-flight pooled resource startup.
+
+## Validation
+
+For normal local validation:
+
+```bash
+make all
+```
+
+That mirrors CI: build, vet, lint, and race-enabled tests.
+
+To prove the compiled CLI works through real command paths, build the binary and run the E2E script:
+
+```bash
+go build -o ./orkestra ./main.go
+./scripts/binary-e2e.sh ./orkestra
+```
+
+The E2E script creates temporary Orkestra state, a real git repository with a bare origin, and runs the compiled `./orkestra` binary. It requires the real Claude Code CLI on `PATH`; it does not replace `claude` with a mock.
 
 ## Design Notes
 
@@ -201,6 +246,9 @@ XORKESTRA_HOME=/tmp/orkestra orkestra init
 - Pipe-friendly agent invocation through Claude Code `-p` and Codex `exec`
 - Login-shell environment capture so user-installed tools are available to agents
 - Per-process GitHub token injection instead of global auth switching
+- Process-group cleanup for timed-out shell capture and stopped agents
+- OS process-start identity checks before signaling a persisted PID
+- Real binary E2E coverage for positive, negative, and edge CLI behavior
 
 ## License
 

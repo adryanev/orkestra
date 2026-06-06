@@ -48,8 +48,12 @@ func TestWriteClaudeConfigRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("config did not round-trip: %v", err)
 	}
-	if got.MCPServers["orkestra"].Args[2] != "ws-7" {
-		t.Errorf("round-tripped workspace id = %q, want ws-7", got.MCPServers["orkestra"].Args[2])
+	args := got.MCPServers["orkestra"].Args
+	if len(args) < 3 {
+		t.Fatalf("args = %v, want at least 3 elements", args)
+	}
+	if args[2] != "ws-7" {
+		t.Errorf("round-tripped workspace id = %q, want ws-7", args[2])
 	}
 }
 

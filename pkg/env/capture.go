@@ -144,6 +144,9 @@ func parseEnvBlock(out string) map[string]string {
 
 	vars := make(map[string]string)
 	for _, line := range lines {
+		// Some shells emit CRLF; a trailing CR would otherwise survive in the
+		// value (e.g. PATH) and break later path resolution.
+		line = strings.TrimSuffix(line, "\r")
 		idx := strings.IndexByte(line, '=')
 		if idx <= 0 {
 			continue
