@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,8 +28,10 @@ func newTestServer(stdout io.Reader, stdin io.Writer) *lspServer {
 		stdout:      bufio.NewReader(stdout),
 		waiters:     make(map[int]chan json.RawMessage),
 		diagnostics: make(map[string]json.RawMessage),
-		openDocs:    make(map[string]bool),
+		openCount:   make(map[string]int),
 	}
+	s.outCond = sync.NewCond(&s.outMu)
+	go s.writeLoop()
 	go s.readLoop()
 	return s
 }
@@ -154,6 +157,45 @@ func TestServerRequestAnsweredWithNull(t *testing.T) {
 	if string(resp.Result) != "null" {
 		t.Errorf("reply result = %s, want null", resp.Result)
 	}
+}
+
+// TestReaderNotBlockedByStuckWriter is the regression test for the writer/
+// reader deadlock: a server that stops reading stdin blocks the writer, but the
+// reader must keep draining stdout and answering server-initiated requests so
+// the server can make progress. With the old design (reader replies under the
+// write lock) this deadlocks.
+func TestReaderNotBlockedByStuckWriter(t *testing.T) {
+	stdoutR, stdoutW := io.Pipe()
+	stdinR, stdinW := io.Pipe()
+	defer func() { _ = stdinR.Close() }() // unblock the stuck writer at test end
+	defer func() { _ = stdoutW.Close() }()
+
+	s := newTestServer(stdoutR, stdinW)
+	defer s.failAll(io.EOF)
+
+	// Occupy the writer with a large write the "server" never drains.
+	_ = s.notify("textDocument/didOpen", map[string]interface{}{"text": strings.Repeat("x", 1<<16)})
+	time.Sleep(50 * time.Millisecond) // let the writer block on the pipe
+
+	// The server sends a request, then a diagnostics notification. The reader
+	// must answer the request (enqueue, non-blocking) and cache the diagnostics
+	// even though the writer is wedged.
+	go func() {
+		_ = writeMessage(stdoutW, map[string]interface{}{"jsonrpc": "2.0", "id": 7, "method": "window/workDoneProgress/create", "params": map[string]interface{}{}})
+		_ = writeMessage(stdoutW, map[string]interface{}{
+			"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+			"params": map[string]interface{}{"uri": "file:///z.go", "diagnostics": []interface{}{}},
+		})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := s.cachedDiagnostics("file:///z.go"); ok {
+			return // reader made progress despite the stuck writer
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("reader appears blocked by the stuck writer (deadlock regression)")
 }
 
 func TestRegistrySelection(t *testing.T) {

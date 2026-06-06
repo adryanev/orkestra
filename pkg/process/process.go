@@ -41,6 +41,18 @@ func Alive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
+// groupAlive reports whether any process remains in the process group pgid.
+// Signaling the negative group id with signal 0 returns ESRCH only when the
+// whole group is gone, so this detects a surviving child even after the group
+// leader has exited.
+func groupAlive(pgid int) bool {
+	if pgid <= 0 {
+		return false
+	}
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
 // TerminateGroup terminates the process group led by pgid. It sends SIGTERM,
 // waits up to grace for the group leader to exit, then sends SIGKILL if the
 // leader is still alive. A group that no longer exists (ESRCH) is treated as
@@ -57,9 +69,11 @@ func TerminateGroup(pgid int, grace time.Duration) error {
 		return err
 	}
 
+	// Poll the whole group, not just the leader: a child that outlives the
+	// leader must still force the SIGKILL escalation.
 	deadline := time.Now().Add(grace)
 	for time.Now().Before(deadline) {
-		if !Alive(pgid) {
+		if !groupAlive(pgid) {
 			return nil
 		}
 		time.Sleep(20 * time.Millisecond)

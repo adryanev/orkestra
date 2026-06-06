@@ -313,39 +313,52 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	var wg sync.WaitGroup
 
 	// stdout parser: extract session id / usage and render or pass through.
+	// ReadString has no line-length cap (unlike bufio.Scanner), so an oversized
+	// agent line can never truncate the stream or stall the drain — which would
+	// fill the pipe and hang the agent.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			var display string
-			if agent == Codex {
-				var msg map[string]interface{}
-				if err := json.Unmarshal([]byte(line), &msg); err != nil {
-					continue
+		reader := bufio.NewReader(stdoutPipe)
+		for {
+			raw, err := reader.ReadString('\n')
+			if len(raw) > 0 {
+				line := strings.TrimRight(raw, "\r\n")
+				var display string
+				if agent == Codex {
+					var msg map[string]interface{}
+					if json.Unmarshal([]byte(line), &msg) == nil {
+						display = captureCodex(msg, &sessionInfo)
+					}
+				} else {
+					display = captureClaude(line, &sessionInfo)
 				}
-				display = captureCodex(msg, &sessionInfo)
-			} else {
-				display = captureClaude(line, &sessionInfo)
+				if stream {
+					// Raw passthrough: emit the original NDJSON/JSONL line.
+					fmt.Fprint(os.Stdout, raw)
+				} else if display != "" {
+					fmt.Fprint(os.Stdout, display)
+				}
 			}
-			if stream {
-				// Raw passthrough: emit the original NDJSON/JSONL line.
-				fmt.Fprintln(os.Stdout, line)
-			} else if display != "" {
-				fmt.Fprint(os.Stdout, display)
+			if err != nil {
+				return // EOF or read error: stdout drained
 			}
 		}
 	}()
 
-	// stderr forwarding.
+	// stderr forwarding (also uncapped, so a long stack trace cannot stall it).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			fmt.Fprintln(os.Stderr, "[STDERR]", scanner.Text())
+		reader := bufio.NewReader(stderrPipe)
+		for {
+			raw, err := reader.ReadString('\n')
+			if len(raw) > 0 {
+				fmt.Fprintln(os.Stderr, "[STDERR]", strings.TrimRight(raw, "\r\n"))
+			}
+			if err != nil {
+				return
+			}
 		}
 	}()
 
@@ -357,14 +370,9 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	waitErr := cmd.Wait()
 
 	// The agent has exited: persist the captured session/thread id and clear
-	// the process record (AddSession writes zero-value PID/PGID) so a later
-	// `stop` treats the workspace as already stopped.
-	if err := r.workspaceManager.AddSession(workspace.Session{
-		WorkspaceID: workspaceID,
-		Agent:       string(agent),
-		SessionID:   sessionInfo.SessionID,
-		ThreadID:    sessionInfo.ThreadID,
-	}); err != nil {
+	// the process record, but only if it still refers to our PID, so a
+	// concurrent run for the same workspace is not clobbered.
+	if err := r.workspaceManager.CompleteSession(workspaceID, string(agent), sessionInfo.SessionID, sessionInfo.ThreadID, pid); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to persist session for %s: %v\n", workspaceID, err)
 	}
 

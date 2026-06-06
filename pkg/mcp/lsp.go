@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,15 +22,17 @@ import (
 const defaultRequestTimeout = 20 * time.Second
 
 // lspServer is a running language-server process and the demultiplexing state
-// for its stdio JSON-RPC channel. One reader goroutine drains stdout and routes
-// each message to a waiting request, the diagnostics cache, or a null reply.
+// for its stdio JSON-RPC channel. A reader goroutine drains stdout and routes
+// each message to a waiting request, the diagnostics cache, or a null reply. A
+// separate writer goroutine owns stdin and drains an in-memory outbound queue.
 //
-// Two independent locks (KTD2a): writeMu guards stdin writes; handleMu guards
-// the request bookkeeping (id counter, waiters, diagnostics, open documents). A
-// request registers its waiter under handleMu, releases it, then writes under
-// writeMu and blocks on its channel holding no lock — so a large didOpen write
-// can never deadlock against the reader goroutine draining stdout (a hazard
-// Korlap documents for pyright).
+// All stdin writes go through the writer goroutine, and enqueueing onto the
+// queue never blocks (it only appends to memory). This is the key invariant
+// (KTD2a): the reader goroutine answers server-initiated requests by enqueueing
+// a reply, so it can never block on a stdin write. A large didOpen that the
+// server is slow to drain backs up the writer goroutine alone; the reader keeps
+// draining stdout, the server keeps making progress, and there is no deadlock
+// (the hazard Korlap documents for pyright).
 type lspServer struct {
 	cfg  LspServerConfig
 	root string
@@ -40,15 +41,28 @@ type lspServer struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 
-	writeMu sync.Mutex
+	// Outbound write queue, drained by writeLoop. enqueue appends and signals;
+	// it never blocks on the pipe, so the reader is never blocked by a write.
+	// outClosed (guarded by outMu) tells writeLoop to stop; it is distinct from
+	// `closed` so the writer never reads handleMu-guarded state.
+	outMu     sync.Mutex
+	outCond   *sync.Cond
+	outBuf    [][]byte
+	outClosed bool
 
 	handleMu    sync.Mutex
 	nextID      int
 	waiters     map[int]chan json.RawMessage
 	diagnostics map[string]json.RawMessage // uri -> publishDiagnostics params
-	openDocs    map[string]bool            // uri -> open
 	closed      bool
 	exitErr     error
+
+	// openMu serializes the didOpen/didClose lifecycle so a concurrent caller
+	// cannot send a request before the document's didOpen is enqueued, and so
+	// the refcount transitions (0->1 sends didOpen, 1->0 sends didClose) happen
+	// exactly once.
+	openMu    sync.Mutex
+	openCount map[string]int // uri -> in-flight open refcount
 }
 
 // startServer spawns the language server, performs the initialize/initialized
@@ -87,8 +101,10 @@ func startServer(workspaceRoot string, cfg LspServerConfig) (*lspServer, error) 
 		stdout:      bufio.NewReader(stdoutPipe),
 		waiters:     make(map[int]chan json.RawMessage),
 		diagnostics: make(map[string]json.RawMessage),
-		openDocs:    make(map[string]bool),
+		openCount:   make(map[string]int),
 	}
+	s.outCond = sync.NewCond(&s.outMu)
+	go s.writeLoop()
 	go s.readLoop()
 
 	if err := s.handshake(); err != nil {
@@ -219,7 +235,8 @@ func (s *lspServer) deliver(id int, raw json.RawMessage) {
 }
 
 // failAll wakes every pending waiter with the reader error so callers unblock
-// when the server dies instead of waiting out their timeouts.
+// when the server dies instead of waiting out their timeouts. It also wakes the
+// writer goroutine so it can exit.
 func (s *lspServer) failAll(err error) {
 	s.handleMu.Lock()
 	s.closed = true
@@ -229,10 +246,59 @@ func (s *lspServer) failAll(err error) {
 		delete(s.waiters, id)
 	}
 	s.handleMu.Unlock()
+
+	s.outMu.Lock()
+	s.outClosed = true
+	s.outCond.Broadcast()
+	s.outMu.Unlock()
 }
 
-// call sends a request and waits for its response under a timeout, never
-// holding handleMu and writeMu at once (KTD2a).
+// writeLoop is the sole owner of stdin. It drains the outbound queue, blocking
+// only on the pipe write — never on the queue — so a slow server backs up the
+// queue without ever blocking the reader or callers.
+func (s *lspServer) writeLoop() {
+	for {
+		s.outMu.Lock()
+		for len(s.outBuf) == 0 && !s.outClosed {
+			s.outCond.Wait()
+		}
+		if len(s.outBuf) == 0 && s.outClosed {
+			s.outMu.Unlock()
+			return
+		}
+		frame := s.outBuf[0]
+		s.outBuf = s.outBuf[1:]
+		s.outMu.Unlock()
+
+		if _, err := s.stdin.Write(frame); err != nil {
+			s.failAll(err)
+			return
+		}
+	}
+}
+
+// enqueue appends a pre-framed message to the outbound queue. It never blocks
+// on the pipe, so it is safe to call from the reader goroutine (replyNull).
+func (s *lspServer) enqueue(frame []byte) {
+	s.outMu.Lock()
+	s.outBuf = append(s.outBuf, frame)
+	s.outCond.Signal()
+	s.outMu.Unlock()
+}
+
+// send frames a payload and enqueues it. Marshalling errors are reported.
+func (s *lspServer) send(payload interface{}) error {
+	frame, err := frameMessage(payload)
+	if err != nil {
+		return err
+	}
+	s.enqueue(frame)
+	return nil
+}
+
+// call sends a request and waits for its response under a timeout. It registers
+// the waiter under handleMu, releases it, then enqueues the request and waits on
+// the channel holding no lock (KTD2a).
 func (s *lspServer) call(method string, params interface{}, timeout time.Duration) (json.RawMessage, error) {
 	s.handleMu.Lock()
 	if s.closed {
@@ -246,7 +312,7 @@ func (s *lspServer) call(method string, params interface{}, timeout time.Duratio
 	s.handleMu.Unlock()
 
 	req := map[string]interface{}{"jsonrpc": "2.0", "id": id, "method": method, "params": params}
-	if err := s.write(req); err != nil {
+	if err := s.send(req); err != nil {
 		s.handleMu.Lock()
 		delete(s.waiters, id)
 		s.handleMu.Unlock()
@@ -268,34 +334,28 @@ func (s *lspServer) call(method string, params interface{}, timeout time.Duratio
 }
 
 func (s *lspServer) notify(method string, params interface{}) error {
-	return s.write(map[string]interface{}{"jsonrpc": "2.0", "method": method, "params": params})
+	return s.send(map[string]interface{}{"jsonrpc": "2.0", "method": method, "params": params})
 }
 
 func (s *lspServer) replyNull(id json.RawMessage) {
-	_ = s.write(map[string]interface{}{"jsonrpc": "2.0", "id": json.RawMessage(id), "result": nil})
+	_ = s.send(map[string]interface{}{"jsonrpc": "2.0", "id": json.RawMessage(id), "result": nil})
 }
 
-// write serializes one message and writes it under writeMu only.
-func (s *lspServer) write(payload interface{}) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return writeMessage(s.stdin, payload)
-}
-
-// Close terminates the server process and unblocks any waiters.
+// Close terminates the server process and unblocks any waiters. It sends the
+// shutdown/exit handshake before marking the server closed so the request is
+// actually transmitted.
 func (s *lspServer) Close() {
 	s.handleMu.Lock()
 	already := s.closed
-	s.closed = true
 	s.handleMu.Unlock()
 	if !already {
-		// Best-effort graceful shutdown before killing.
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// Best-effort graceful shutdown before killing. Sent while the server
+		// is still open so call() does not short-circuit.
 		_, _ = s.call("shutdown", nil, time.Second)
 		_ = s.notify("exit", nil)
-		cancel()
-		_ = ctx.Err()
 	}
+
+	s.failAll(fmt.Errorf("server closed"))
 	_ = s.stdin.Close()
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
@@ -311,49 +371,58 @@ func (s *lspServer) alive() bool {
 
 // --- document lifecycle ---
 
-// ensureOpen sends textDocument/didOpen for path if it is not already open,
-// reading the content from disk and tagging it with the registry languageId.
+// ensureOpen increments the open refcount for path and, on the 0->1 transition,
+// reads the content and enqueues textDocument/didOpen. openMu is held across the
+// enqueue so the didOpen is queued (FIFO) before any concurrent caller's request
+// — the subsequent LSP request can never reach the server before the open.
 func (s *lspServer) ensureOpen(path string) (string, error) {
 	uri := pathToURI(path)
-	s.handleMu.Lock()
-	open := s.openDocs[uri]
-	s.handleMu.Unlock()
-	if open {
+	s.openMu.Lock()
+	defer s.openMu.Unlock()
+
+	if s.openCount[uri] > 0 {
+		s.openCount[uri]++
 		return uri, nil
 	}
+
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to read %s: %w", path, err)
 	}
-	err = s.notify("textDocument/didOpen", map[string]interface{}{
+	if err := s.notify("textDocument/didOpen", map[string]interface{}{
 		"textDocument": map[string]interface{}{
 			"uri":        uri,
 			"languageId": s.cfg.LanguageID,
 			"version":    1,
 			"text":       string(content),
 		},
-	})
-	if err != nil {
+	}); err != nil {
 		return "", err
 	}
-	s.handleMu.Lock()
-	s.openDocs[uri] = true
-	s.handleMu.Unlock()
+	s.openCount[uri] = 1
 	return uri, nil
 }
 
+// closeDoc decrements the open refcount and, on the 1->0 transition, enqueues
+// textDocument/didClose so the document is closed only after the last in-flight
+// caller is done with it.
 func (s *lspServer) closeDoc(uri string) {
-	s.handleMu.Lock()
-	open := s.openDocs[uri]
-	if open {
-		delete(s.openDocs, uri)
+	s.openMu.Lock()
+	defer s.openMu.Unlock()
+
+	count := s.openCount[uri]
+	if count <= 0 {
+		return
 	}
-	s.handleMu.Unlock()
-	if open {
-		_ = s.notify("textDocument/didClose", map[string]interface{}{
-			"textDocument": map[string]interface{}{"uri": uri},
-		})
+	count--
+	if count > 0 {
+		s.openCount[uri] = count
+		return
 	}
+	delete(s.openCount, uri)
+	_ = s.notify("textDocument/didClose", map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+	})
 }
 
 // cachedDiagnostics returns the most recent publishDiagnostics params for uri.
@@ -366,18 +435,24 @@ func (s *lspServer) cachedDiagnostics(uri string) (json.RawMessage, bool) {
 
 // --- base protocol framing ---
 
-// writeMessage frames a JSON-RPC payload with a Content-Length header. The
-// length is the byte count of the body, not its character count.
-func writeMessage(w io.Writer, payload interface{}) error {
+// frameMessage serializes a JSON-RPC payload into a Content-Length framed
+// byte slice. The length is the byte count of the body, not its character count.
+func frameMessage(payload interface{}) ([]byte, error) {
 	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
+	return append([]byte(header), body...), nil
+}
+
+// writeMessage frames a payload and writes it to w in one call.
+func writeMessage(w io.Writer, payload interface{}) error {
+	frame, err := frameMessage(payload)
 	if err != nil {
 		return err
 	}
-	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
-	if _, err := io.WriteString(w, header); err != nil {
-		return err
-	}
-	_, err = w.Write(body)
+	_, err = w.Write(frame)
 	return err
 }
 

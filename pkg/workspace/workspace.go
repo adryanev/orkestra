@@ -322,6 +322,35 @@ func (m *Manager) SetSessionProcess(workspaceID, agent string, pid, pgid int, st
 	})
 }
 
+// CompleteSession records the captured session/thread id at agent exit and
+// clears the process record, but only when the stored PID still matches ourPID.
+// This prevents a finishing run from clobbering the live PID of a concurrent
+// run for the same workspace.
+func (m *Manager) CompleteSession(workspaceID, agent, sessionID, threadID string, ourPID int) error {
+	return m.mutate(func() error {
+		s, ok := m.sessions[workspaceID]
+		if !ok {
+			s = &Session{WorkspaceID: workspaceID}
+			m.sessions[workspaceID] = s
+		}
+		if agent != "" {
+			s.Agent = agent
+		}
+		if sessionID != "" {
+			s.SessionID = sessionID
+		}
+		if threadID != "" {
+			s.ThreadID = threadID
+		}
+		if s.PID == ourPID {
+			s.PID = 0
+			s.PGID = 0
+			s.StartedAt = 0
+		}
+		return nil
+	})
+}
+
 // ClearSessionProcess zeroes the process-tracking fields for a workspace,
 // leaving the session/thread id intact. A missing record is not an error so
 // callers can clear unconditionally on exit.

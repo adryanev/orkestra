@@ -1,12 +1,29 @@
 package runner
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/adryanev/orkestra/pkg/env"
 )
+
+// TestSessionInfoOutputHasNoCredentials locks the run/resume output shape: the
+// reported SessionInfo must never carry environment-derived credentials (R21).
+// This guards against a future field that would serialize the injected token.
+func TestSessionInfoOutputHasNoCredentials(t *testing.T) {
+	si := SessionInfo{SessionID: "s", ThreadID: "t", Usage: UsageReport{InputTokens: 1, OutputTokens: 2, Model: "m"}}
+	b, err := json.Marshal(si)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, banned := range []string{"GH_TOKEN", "PATH=", "ghp_", "VIRTUAL_ENV"} {
+		if strings.Contains(string(b), banned) {
+			t.Errorf("session output JSON leaked %q: %s", banned, b)
+		}
+	}
+}
 
 func envValue(vars []string, key string) (string, bool) {
 	for _, kv := range vars {
