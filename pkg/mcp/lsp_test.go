@@ -351,6 +351,25 @@ func TestApplyWorkspaceEditCountsAppliedEditsAndUsesUTF16Columns(t *testing.T) {
 	}
 }
 
+func TestFormatLocationsIncludesSourceContext(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "main.go")
+	mustWrite(t, file, "package main\nfunc alpha() {}\nfunc beta() {}\n")
+	pool := NewLspPool(root, nil)
+
+	out := pool.formatLocations("References", []lspLocation{
+		{URI: pathToURI(file), Range: lspRange{Start: lspPosition{Line: 1, Character: 5}}},
+		{URI: pathToURI(file), Range: lspRange{Start: lspPosition{Line: 2, Character: 5}}},
+	})
+
+	if !strings.Contains(out, "main.go:2:6  func alpha() {}") {
+		t.Fatalf("missing first source context:\n%s", out)
+	}
+	if !strings.Contains(out, "main.go:3:6  func beta() {}") {
+		t.Fatalf("missing second source context:\n%s", out)
+	}
+}
+
 func TestApplyTextEditsRejectsUnsupportedMultilineEdit(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "main.go")
 	mustWrite(t, file, "one\ntwo\n")

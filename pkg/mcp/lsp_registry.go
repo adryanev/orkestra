@@ -8,7 +8,7 @@ import (
 // LspServerConfig describes how to launch and address a language server. The
 // set is config-driven so a deployment can override the command for a language
 // (a pinned gopls, a project-local typescript-language-server) without code
-// changes. Ported from Korlap's src-tauri/src/lsp/types.rs.
+// changes.
 type LspServerConfig struct {
 	// ServerID is the stable identity used as the pool key and the merge key
 	// for user overrides.

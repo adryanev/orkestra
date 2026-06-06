@@ -55,6 +55,25 @@ func TestTerminateGroupHappyPath(t *testing.T) {
 	}
 }
 
+func TestIdentityMatchesProcessGroupLeader(t *testing.T) {
+	pid := startGroupLeader(t, "sh", "sleep 30")
+	defer func() { _ = TerminateGroup(pid, DefaultGrace) }()
+
+	startedAt, err := StartedAt(pid)
+	if err != nil {
+		t.Fatalf("StartedAt: %v", err)
+	}
+	if !IdentityMatches(pid, pid, startedAt) {
+		t.Fatal("expected identity to match the live process group leader")
+	}
+	if IdentityMatches(pid, pid+1, startedAt) {
+		t.Fatal("expected mismatched pgid to fail identity validation")
+	}
+	if IdentityMatches(pid, pid, startedAt+1) {
+		t.Fatal("expected mismatched start token to fail identity validation")
+	}
+}
+
 // TestTerminateGroupGraceEscalation: a process that ignores SIGTERM is still
 // killed by the follow-up SIGKILL after the grace period.
 func TestTerminateGroupGraceEscalation(t *testing.T) {

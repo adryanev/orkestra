@@ -23,8 +23,8 @@ const (
 )
 
 // Server is the orkestra MCP server, fixed to a single workspace for the
-// session (as Korlap fixes KORLAP_WORKSPACE_ID). LSP tool arguments carry file
-// paths relative to that workspace's worktree.
+// session. LSP tool arguments carry file paths relative to that workspace's
+// worktree.
 type Server struct {
 	wm          *workspace.Manager
 	workspaceID string

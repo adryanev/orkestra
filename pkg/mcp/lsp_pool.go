@@ -16,17 +16,25 @@ type LspPool struct {
 	root    string
 	configs []LspServerConfig
 
-	mu      sync.Mutex
-	servers map[string]*lspServer // serverID -> server
+	mu       sync.Mutex
+	servers  map[string]*lspServer // serverID -> server
+	starting map[string]*serverStart
+}
+
+type serverStart struct {
+	done   chan struct{}
+	server *lspServer
+	err    error
 }
 
 // NewLspPool builds a pool for workspaceRoot. userOverrides (possibly nil)
 // merge over the built-in language-server configs, user winning per server id.
 func NewLspPool(workspaceRoot string, userOverrides []LspServerConfig) *LspPool {
 	return &LspPool{
-		root:    workspaceRoot,
-		configs: resolveConfigs(userOverrides),
-		servers: make(map[string]*lspServer),
+		root:     workspaceRoot,
+		configs:  resolveConfigs(userOverrides),
+		servers:  make(map[string]*lspServer),
+		starting: make(map[string]*serverStart),
 	}
 }
 
@@ -44,28 +52,64 @@ func (p *LspPool) serverForFile(path string) (*lspServer, error) {
 
 func (p *LspPool) getOrStart(cfg LspServerConfig) (*lspServer, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if s, ok := p.servers[cfg.ServerID]; ok {
 		if s.alive() {
+			p.mu.Unlock()
 			return s, nil
 		}
 		delete(p.servers, cfg.ServerID) // reap a dead server before restarting
 	}
+	if start, ok := p.starting[cfg.ServerID]; ok {
+		p.mu.Unlock()
+		<-start.done
+		if start.err != nil {
+			return nil, start.err
+		}
+		if start.server != nil && start.server.alive() {
+			return start.server, nil
+		}
+		return p.getOrStart(cfg)
+	}
+
+	start := &serverStart{done: make(chan struct{})}
+	p.starting[cfg.ServerID] = start
+	p.mu.Unlock()
 
 	// Validate the binary on the captured PATH so a server installed via
 	// nvm/fnm/asdf resolves, returning the actionable install hint when absent
 	// (R17b) instead of hanging or panicking.
 	if env.LookPath(cfg.Command) == "" {
-		return nil, fmt.Errorf("%s", cfg.InstallHint)
+		start.err = fmt.Errorf("%s", cfg.InstallHint)
+		p.finishStart(cfg.ServerID, start)
+		return nil, start.err
 	}
 
 	s, err := startServer(p.root, cfg)
+	start.server = s
+	start.err = err
 	if err != nil {
+		p.finishStart(cfg.ServerID, start)
 		return nil, err
 	}
-	p.servers[cfg.ServerID] = s
-	return s, nil
+	p.mu.Lock()
+	if existing, ok := p.servers[cfg.ServerID]; ok && existing.alive() {
+		start.server = existing
+		s.Close()
+	} else {
+		p.servers[cfg.ServerID] = s
+	}
+	delete(p.starting, cfg.ServerID)
+	close(start.done)
+	p.mu.Unlock()
+	return start.server, nil
+}
+
+func (p *LspPool) finishStart(serverID string, start *serverStart) {
+	p.mu.Lock()
+	delete(p.starting, serverID)
+	close(start.done)
+	p.mu.Unlock()
 }
 
 // Shutdown stops every running server in the pool.

@@ -14,7 +14,14 @@
 package process
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -39,6 +46,77 @@ func Alive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// StartedAt returns an OS-derived process-start token for pid. The value is
+// platform-specific and only meant to be compared with a later StartedAt call
+// for the same pid; it is not necessarily a wall-clock timestamp.
+func StartedAt(pid int) (int64, error) {
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid pid %d", pid)
+	}
+	switch runtime.GOOS {
+	case "linux":
+		return linuxStartTicks(pid)
+	case "darwin":
+		return darwinStartUnixNano(pid)
+	default:
+		return 0, fmt.Errorf("process identity unsupported on %s", runtime.GOOS)
+	}
+}
+
+func linuxStartTicks(pid int) (int64, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	stat := string(data)
+	endComm := strings.LastIndexByte(stat, ')')
+	if endComm == -1 || endComm+2 >= len(stat) {
+		return 0, fmt.Errorf("malformed /proc stat for pid %d", pid)
+	}
+	fields := strings.Fields(stat[endComm+2:])
+	// /proc/<pid>/stat field 22 is starttime. After trimming the comm field,
+	// fields[0] is field 3 (state), so starttime lands at index 19.
+	if len(fields) <= 19 {
+		return 0, fmt.Errorf("missing starttime in /proc stat for pid %d", pid)
+	}
+	return strconv.ParseInt(fields[19], 10, 64)
+}
+
+func darwinStartUnixNano(pid int) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, err
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return 0, fmt.Errorf("missing start time for pid %d", pid)
+	}
+	t, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", text, time.Local)
+	if err != nil {
+		return 0, err
+	}
+	return t.UnixNano(), nil
+}
+
+// IdentityMatches verifies that pid is still the process-group leader that was
+// recorded at spawn time. This protects `stop` from signaling a recycled PID.
+func IdentityMatches(pid, pgid int, startedAt int64) bool {
+	if pid <= 0 || pgid <= 0 || startedAt <= 0 {
+		return false
+	}
+	currentPGID, err := syscall.Getpgid(pid)
+	if err != nil || currentPGID != pgid {
+		return false
+	}
+	currentStartedAt, err := StartedAt(pid)
+	if err != nil {
+		return false
+	}
+	return currentStartedAt == startedAt
 }
 
 // groupAlive reports whether any process remains in the process group pgid.

@@ -31,8 +31,7 @@ const defaultRequestTimeout = 20 * time.Second
 // (KTD2a): the reader goroutine answers server-initiated requests by enqueueing
 // a reply, so it can never block on a stdin write. A large didOpen that the
 // server is slow to drain backs up the writer goroutine alone; the reader keeps
-// draining stdout, the server keeps making progress, and there is no deadlock
-// (the hazard Korlap documents for pyright).
+// draining stdout, the server keeps making progress, and there is no deadlock.
 type lspServer struct {
 	cfg  LspServerConfig
 	root string

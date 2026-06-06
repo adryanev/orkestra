@@ -124,9 +124,10 @@ func (p *LspPool) WorkspaceSymbols(query string) (string, error) {
 		return "No symbols found.", nil
 	}
 	var b strings.Builder
+	lines := sourceLineCache{}
 	fmt.Fprintf(&b, "Symbols matching %q:\n", query)
 	for _, sym := range syms {
-		fmt.Fprintf(&b, "  %s  %s\n", sym.Name, p.formatLocationLine(sym.Location))
+		fmt.Fprintf(&b, "  %s  %s\n", sym.Name, p.formatLocationLine(sym.Location, lines))
 	}
 	return b.String(), nil
 }
@@ -220,16 +221,17 @@ func parseLocations(raw json.RawMessage) []lspLocation {
 
 func (p *LspPool) formatLocations(label string, locs []lspLocation) string {
 	var b strings.Builder
+	lines := sourceLineCache{}
 	fmt.Fprintf(&b, "%s (%d):\n", label, len(locs))
 	for _, loc := range locs {
-		fmt.Fprintf(&b, "  %s\n", p.formatLocationLine(loc))
+		fmt.Fprintf(&b, "  %s\n", p.formatLocationLine(loc, lines))
 	}
 	return b.String()
 }
 
 // formatLocationLine renders a location as "relpath:line:col  context", with
 // 1-based line/column and the source line when readable.
-func (p *LspPool) formatLocationLine(loc lspLocation) string {
+func (p *LspPool) formatLocationLine(loc lspLocation, lines sourceLineCache) string {
 	path := uriToPath(loc.URI)
 	rel := path
 	if r, err := filepath.Rel(p.root, path); err == nil {
@@ -237,20 +239,26 @@ func (p *LspPool) formatLocationLine(loc lspLocation) string {
 	}
 	line := loc.Range.Start.Line + 1
 	col := loc.Range.Start.Character + 1
-	ctx := sourceLine(path, loc.Range.Start.Line)
+	ctx := lines.sourceLine(path, loc.Range.Start.Line)
 	if ctx != "" {
 		return fmt.Sprintf("%s:%d:%d  %s", rel, line, col, ctx)
 	}
 	return fmt.Sprintf("%s:%d:%d", rel, line, col)
 }
 
+type sourceLineCache map[string][]string
+
 // sourceLine returns the trimmed source line (0-based index) from path, or "".
-func sourceLine(path string, index int) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
+func (c sourceLineCache) sourceLine(path string, index int) string {
+	lines, ok := c[path]
+	if !ok {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		lines = strings.Split(string(data), "\n")
+		c[path] = lines
 	}
-	lines := strings.Split(string(data), "\n")
 	if index < 0 || index >= len(lines) {
 		return ""
 	}

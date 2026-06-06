@@ -12,12 +12,16 @@ package env
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/adryanev/orkestra/pkg/process"
 )
 
 // captureTimeout bounds each shell invocation. An interactive rc file that
@@ -74,11 +78,31 @@ func captureFromShell(shell string, timeout time.Duration) (map[string]string, b
 	// echo MARKER; env; echo MARKER  — the markers let us discard rc-file noise
 	// printed before or after the real output.
 	script := "echo " + marker + "; /usr/bin/env; echo " + marker
-	cmd := exec.CommandContext(ctx, shell, shellArgs(shell, script)...)
+	cmd := exec.Command(shell, shellArgs(shell, script)...)
+	cmd.SysProcAttr = process.SysProcAttr()
 	// Discard rc-file chatter written to stderr (banners, warnings).
-	cmd.Stderr = nil
-	out, err := cmd.Output()
+	cmd.Stderr = io.Discard
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		return nil, false
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, false
+	}
+	pid := cmd.Process.Pid
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		case <-done:
+		}
+	}()
+	out, readErr := io.ReadAll(stdout)
+	waitErr := cmd.Wait()
+	close(done)
+	if readErr != nil || waitErr != nil {
 		return nil, false
 	}
 	vars := parseEnvBlock(string(out))

@@ -152,14 +152,14 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 	return sessionInfo, nil
 }
 
-// IsRunning reports whether the workspace has a live agent process, based on
-// the persisted PID. A stale or absent record reads as not running.
+// IsRunning reports whether the workspace has the same live agent process that
+// `run` recorded. A stale, recycled, or absent record reads as not running.
 func (r *Runner) IsRunning(workspaceID string) bool {
 	s, err := r.workspaceManager.GetSession(workspaceID)
 	if err != nil {
 		return false
 	}
-	return s.PID > 0 && process.Alive(s.PID)
+	return process.IdentityMatches(s.PID, s.PGID, s.StartedAt)
 }
 
 // Stop terminates the agent process group recorded for a workspace. It reads
@@ -174,7 +174,16 @@ func (r *Runner) Stop(workspaceID string) error {
 		return nil
 	}
 
-	if s.PGID > 0 {
+	if s.PID > 0 || s.PGID > 0 {
+		if !process.IdentityMatches(s.PID, s.PGID, s.StartedAt) {
+			if err := r.workspaceManager.ClearSessionProcess(workspaceID); err != nil {
+				return fmt.Errorf("failed to clear stale process state for workspace %s: %w", workspaceID, err)
+			}
+			if err := r.workspaceManager.UpdateWorkspaceStatus(workspaceID, "inactive"); err != nil {
+				return fmt.Errorf("failed to update workspace status for %s: %w", workspaceID, err)
+			}
+			return nil
+		}
 		if err := process.TerminateGroup(s.PGID, process.DefaultGrace); err != nil {
 			return fmt.Errorf("failed to terminate agent for workspace %s: %w", workspaceID, err)
 		}
@@ -249,8 +258,8 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mc
 			args = append(args, "--resume", resumeSessionID)
 		}
 		args = append(args, "--permission-mode", "bypassPermissions")
-		// Disable the agent's built-in LSP tool so the orkestra LSP tools are
-		// used instead (orkestra manages LSP centrally, as Korlap does).
+		// Disable the agent's built-in LSP tool so Orkestra's centrally
+		// managed LSP tools are used instead.
 		args = append(args, "--disallowedTools", "EnterWorktree,ExitWorktree,LSP")
 		if mcpConfigPath != "" {
 			args = append(args, "--mcp-config", mcpConfigPath)
@@ -330,7 +339,13 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	// Persist the PID/PGID immediately so a concurrent `stop` can find the
 	// agent while it runs. With Setpgid the new group id equals the child PID.
 	pid := cmd.Process.Pid
-	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), pid, pid, time.Now().UnixNano()); err != nil {
+	startedAt, err := process.StartedAt(pid)
+	if err != nil {
+		_ = process.TerminateGroup(pid, process.DefaultGrace)
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("failed to capture agent process identity for workspace %s: %w", workspaceID, err)
+	}
+	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), pid, pid, startedAt); err != nil {
 		_ = process.TerminateGroup(pid, process.DefaultGrace)
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("failed to persist agent process for workspace %s: %w", workspaceID, err)

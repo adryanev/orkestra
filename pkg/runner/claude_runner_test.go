@@ -200,6 +200,42 @@ func TestRunResumeRequiresAgentSpecificID(t *testing.T) {
 	}
 }
 
+func TestStopClearsStaleProcessIdentity(t *testing.T) {
+	r, m, id := testRunnerWithWorkspace(t)
+	if err := m.AddSession(workspace.Session{
+		WorkspaceID: id,
+		Agent:       string(Claude),
+		SessionID:   "sid",
+		PID:         999999,
+		PGID:        999999,
+		StartedAt:   1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.UpdateWorkspaceStatus(id, "active"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.Stop(id); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	s, err := m.GetSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PID != 0 || s.PGID != 0 || s.StartedAt != 0 {
+		t.Fatalf("process state should be cleared, got %+v", s)
+	}
+	ws, err := m.GetWorkspace(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Status != "inactive" {
+		t.Fatalf("workspace status = %q, want inactive", ws.Status)
+	}
+}
+
 func TestCaptureClaudeSessionAndUsage(t *testing.T) {
 	var si SessionInfo
 	captureClaude(`{"type":"system","session_id":"sid-1"}`, &si)

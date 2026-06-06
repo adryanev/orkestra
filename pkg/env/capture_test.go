@@ -98,6 +98,24 @@ func TestCaptureFromShellTimeoutFallsBack(t *testing.T) {
 	}
 }
 
+func TestCaptureFromShellTimeoutKillsBackgroundDescendant(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell capture")
+	}
+	fakeShell := filepath.Join(t.TempDir(), "fake-shell")
+	if err := os.WriteFile(fakeShell, []byte("#!/bin/sh\n(sleep 5) &\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if _, ok := captureFromShell(fakeShell, 50*time.Millisecond); ok {
+		t.Fatal("expected capture to fail under timeout")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("capture should not wait for a background descendant holding the pipe")
+	}
+}
+
 // lookShell returns a usable POSIX shell path, or a skip reason.
 func lookShell(t *testing.T) (string, string) {
 	t.Helper()

@@ -44,7 +44,8 @@ type Session struct {
 	SessionID   string `json:"session_id,omitempty"` // agent-specific session ID
 	ThreadID    string `json:"thread_id,omitempty"`  // agent-specific thread ID (for codex)
 	// Process tracking for cross-process `stop`. PID/PGID identify the running
-	// agent; StartedAt (unix nanoseconds) records when `run` spawned it.
+	// agent; StartedAt stores an OS process-start identity token captured when
+	// `run` spawned it, so `stop` can reject recycled PIDs.
 	PID       int   `json:"pid,omitempty"`
 	PGID      int   `json:"pgid,omitempty"`
 	StartedAt int64 `json:"started_at,omitempty"`
