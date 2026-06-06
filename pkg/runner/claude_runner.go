@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strings"
 	"sync"
 
 	"github.com/adryanev/orkestra/pkg/workspace"
@@ -51,12 +50,19 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 		return nil, fmt.Errorf("failed to get workspace %s: %w", workspaceID, err)
 	}
 
-	cmdArgs := []string{"-p", prompt}
+	// On resume, look up the saved session/thread id so it can be passed to
+	// the agent. Without it, `--resume` has nothing to continue.
+	var resumeSessionID, resumeThreadID string
 	if resume {
-		cmdArgs = append(cmdArgs, "--resume")
+		s, err := r.workspaceManager.GetSession(workspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("cannot resume workspace %s: no saved session (run it first): %w", workspaceID, err)
+		}
+		resumeSessionID = s.SessionID
+		resumeThreadID = s.ThreadID
 	}
 
-	sessionInfo, err := r.executeAgent(ws.WorktreePath, agent, cmdArgs, stream)
+	sessionInfo, err := r.executeAgent(ws.WorktreePath, agent, prompt, resumeSessionID, resumeThreadID, stream)
 	if err != nil {
 		return nil, fmt.Errorf("agent execution failed for workspace %s: %w", workspaceID, err)
 	}
@@ -81,55 +87,37 @@ func (r *Runner) Stop(workspaceID string) error {
 	return nil
 }
 
-func (r *Runner) executeAgent(worktreePath string, agent AgentType, args []string, stream bool) (*SessionInfo, error) {
-	var cmdName string
-	codexResume := false
-
+// buildAgentArgs constructs the binary name and argument vector for an agent
+// invocation. Pulled out of executeAgent so the resume/session wiring is unit
+// testable without spawning a process.
+func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID string) (string, []string, error) {
 	switch agent {
 	case Claude:
-		cmdName = "claude"
-		// Claude: -p is already in args. Add stream-json flags.
-		args = append([]string{"--output-format", "stream-json", "--verbose"}, args...)
-		hasPermission := false
-		hasDisallowed := false
-		for _, a := range args {
-			if strings.HasPrefix(a, "--permission-mode") {
-				hasPermission = true
-			}
-			if strings.HasPrefix(a, "--disallowed") {
-				hasDisallowed = true
-			}
+		args := []string{"--output-format", "stream-json", "--verbose", "-p", prompt}
+		// Continue the prior session when a session id is known.
+		if resumeSessionID != "" {
+			args = append(args, "--resume", resumeSessionID)
 		}
-		if !hasPermission {
-			args = append(args, "--permission-mode", "bypassPermissions")
-		}
-		if !hasDisallowed {
-			args = append(args, "--disallowedTools", "EnterWorktree,ExitWorktree")
-		}
+		args = append(args, "--permission-mode", "bypassPermissions")
+		args = append(args, "--disallowedTools", "EnterWorktree,ExitWorktree")
+		return "claude", args, nil
 
 	case Codex:
-		cmdName = "codex"
-		// Check if this is a resume: args contains "--resume"
-		for _, a := range args {
-			if a == "--resume" {
-				codexResume = true
-				break
-			}
-		}
-		// Extract the prompt (last arg)
-		prompt := args[len(args)-1]
-
-		if codexResume {
+		if resumeThreadID != "" {
 			// codex exec resume <thread_id> --json "prompt"
-			// Need thread_id from saved session
-			args = []string{"exec", "resume"}
-			args = append(args, prompt) // thread_id comes first after "resume" via session lookup
-		} else {
-			args = []string{"exec", "--json", "--dangerously-bypass-approvals-and-sandbox", prompt}
+			return "codex", []string{"exec", "resume", resumeThreadID, "--json", prompt}, nil
 		}
+		return "codex", []string{"exec", "--json", "--dangerously-bypass-approvals-and-sandbox", prompt}, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported agent type: %s", agent)
+		return "", nil, fmt.Errorf("unsupported agent type: %s", agent)
+	}
+}
+
+func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID string, stream bool) (*SessionInfo, error) {
+	cmdName, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID)
+	if err != nil {
+		return nil, err
 	}
 
 	cmd := exec.Command(cmdName, args...)

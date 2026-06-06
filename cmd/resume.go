@@ -31,12 +31,6 @@ var resumeCmd = &cobra.Command{
 			prompt = args[0]
 		}
 
-		// Check saved session
-		_, err := wm.GetSession(resumeWorkspace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: no saved session found (starting fresh): %v\n", err)
-		}
-
 		a := runner.Claude
 		if resumeAgent == "codex" {
 			a = runner.Codex
