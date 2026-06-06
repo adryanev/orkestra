@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
-	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/adryanev/orkestra/pkg/env"
+	"github.com/adryanev/orkestra/pkg/workspace"
 )
 
 // AgentType defines the type of agent being run.
@@ -142,129 +144,164 @@ func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resu
 	}
 
 	var sessionInfo SessionInfo
-	var usageReport UsageReport
+	var wg sync.WaitGroup
 
-	if agent == Codex {
-		// Codex JSONL parser
-		go func() {
-			decoder := json.NewDecoder(stdoutPipe)
-			for {
-				var raw json.RawMessage
-				if err := decoder.Decode(&raw); err != nil {
-					break
-				}
-
-				var msg map[string]interface{}
-				if err := json.Unmarshal(raw, &msg); err != nil {
-					continue
-				}
-
-				eventType, _ := msg["type"].(string)
-
-				switch eventType {
-				case "thread.started":
-					if tid, ok := msg["thread_id"].(string); ok {
-						sessionInfo.ThreadID = tid
-						fmt.Printf("[ORKESTRA] Thread started: %s\n", tid)
-					}
-				case "item.completed":
-					if item, ok := msg["item"].(map[string]interface{}); ok {
-						itemType, _ := item["type"].(string)
-						switch itemType {
-						case "agent_message":
-							if text, ok := item["text"].(string); ok {
-								fmt.Println(text)
-							}
-						case "command_execution":
-							if cmdText, ok := item["command"].(string); ok {
-								exitCode, _ := item["exit_code"].(float64)
-								fmt.Printf("[CMD] %s (exit: %.0f)\n", cmdText, exitCode)
-							}
-						case "mcp_tool_call":
-							if tool, ok := item["tool"].(string); ok {
-								fmt.Printf("[MCP] Tool call: %s\n", tool)
-							}
-						}
-					}
-				case "turn.completed":
-					if usage, ok := msg["usage"].(map[string]interface{}); ok {
-						usageJSON, _ := json.Marshal(usage)
-						json.Unmarshal(usageJSON, &usageReport)
-						sessionInfo.Usage = usageReport
-					}
-					fmt.Println("[ORKESTRA] Turn completed")
-				case "turn.failed":
-					fmt.Println("[ORKESTRA] Turn failed")
-				}
-			}
-		}()
-	} else {
-		// Claude NDJSON parser
-		var firstLine = true
-		go func() {
-			scanner := bufio.NewScanner(stdoutPipe)
-			for scanner.Scan() {
-				line := scanner.Text()
-
+	// stdout parser: extract session id / usage and render or pass through.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdoutPipe)
+		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			var display string
+			if agent == Codex {
 				var msg map[string]interface{}
 				if err := json.Unmarshal([]byte(line), &msg); err != nil {
 					continue
 				}
-
-				msgType, ok := msg["type"].(string)
-				if !ok {
-					continue
-				}
-
-				switch msgType {
-				case "system":
-					if firstLine {
-						if sid, ok := msg["session_id"].(string); ok {
-							sessionInfo.SessionID = sid
-							fmt.Printf("[ORKESTRA] Session: %s\n", sid)
-						}
-						if tid, ok := msg["thread_id"].(string); ok {
-							sessionInfo.ThreadID = tid
-						}
-						firstLine = false
-					}
-				case "assistant":
-					if message, ok := msg["message"].(map[string]interface{}); ok {
-						if content, ok := message["content"].([]interface{}); ok {
-							for _, block := range content {
-								if b, ok := block.(map[string]interface{}); ok {
-									if bType, _ := b["type"].(string); bType == "text" {
-										if text, ok := b["text"].(string); ok {
-											fmt.Print(text)
-										}
-									}
-								}
-							}
-							fmt.Println()
-						}
-					}
-				case "result":
-					if usage, ok := msg["usage"].(map[string]interface{}); ok {
-						usageJSON, _ := json.Marshal(usage)
-						json.Unmarshal(usageJSON, &usageReport)
-						sessionInfo.Usage = usageReport
-					}
-				}
+				display = captureCodex(msg, &sessionInfo)
+			} else {
+				display = captureClaude(line, &sessionInfo)
 			}
-		}()
-	}
-
-	// stderr forwarding regardless of agent type
-	go func() {
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			fmt.Println("[STDERR]", scanner.Text())
+			if stream {
+				// Raw passthrough: emit the original NDJSON/JSONL line.
+				fmt.Fprintln(os.Stdout, line)
+			} else if display != "" {
+				fmt.Fprint(os.Stdout, display)
+			}
 		}
 	}()
+
+	// stderr forwarding.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			fmt.Fprintln(os.Stderr, "[STDERR]", scanner.Text())
+		}
+	}()
+
+	// Drain stdout and stderr to EOF before reaping the process. cmd.Wait
+	// closes the pipe read ends, which would truncate the final line (the
+	// session id / usage) if it ran while the parser was still reading.
+	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
 		return &sessionInfo, fmt.Errorf("agent process finished with error: %w", err)
 	}
 
 	return &sessionInfo, nil
+}
+
+// intField reads a numeric JSON field as int (JSON numbers decode to float64).
+func intField(m map[string]interface{}, k string) int {
+	v, _ := m[k].(float64)
+	return int(v)
+}
+
+// claudeInputTokens is Claude's true input total: base input plus cache
+// creation and cache read tokens. Reading input_tokens alone undercounts.
+func claudeInputTokens(u map[string]interface{}) int {
+	return intField(u, "input_tokens") +
+		intField(u, "cache_creation_input_tokens") +
+		intField(u, "cache_read_input_tokens")
+}
+
+// captureClaude parses one Claude NDJSON line, updates si, and returns the
+// human-readable text to display for that line (empty when nothing to show).
+func captureClaude(line string, si *SessionInfo) string {
+	var msg map[string]interface{}
+	if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		return ""
+	}
+	switch t, _ := msg["type"].(string); t {
+	case "system":
+		if si.SessionID == "" {
+			if sid, ok := msg["session_id"].(string); ok {
+				si.SessionID = sid
+			}
+		}
+		if si.ThreadID == "" {
+			if tid, ok := msg["thread_id"].(string); ok {
+				si.ThreadID = tid
+			}
+		}
+	case "assistant":
+		return claudeAssistantText(msg)
+	case "result":
+		if usage, ok := msg["usage"].(map[string]interface{}); ok {
+			si.Usage.InputTokens = claudeInputTokens(usage)
+			si.Usage.OutputTokens = intField(usage, "output_tokens")
+		}
+		if model, ok := msg["model"].(string); ok {
+			si.Usage.Model = model
+		}
+	}
+	return ""
+}
+
+func claudeAssistantText(msg map[string]interface{}) string {
+	message, ok := msg["message"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	content, ok := message["content"].([]interface{})
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for _, block := range content {
+		bl, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := bl["type"].(string); t == "text" {
+			if text, ok := bl["text"].(string); ok {
+				b.WriteString(text)
+			}
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return b.String() + "\n"
+}
+
+// captureCodex parses one Codex JSONL event, updates si, and returns the text
+// to display for that event (empty when nothing to show).
+func captureCodex(msg map[string]interface{}, si *SessionInfo) string {
+	switch t, _ := msg["type"].(string); t {
+	case "thread.started":
+		if tid, ok := msg["thread_id"].(string); ok {
+			si.ThreadID = tid
+		}
+	case "item.completed":
+		item, ok := msg["item"].(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		switch it, _ := item["type"].(string); it {
+		case "agent_message":
+			if text, ok := item["text"].(string); ok {
+				return text + "\n"
+			}
+		case "command_execution":
+			if cmdText, ok := item["command"].(string); ok {
+				exit, _ := item["exit_code"].(float64)
+				return fmt.Sprintf("[CMD] %s (exit: %.0f)\n", cmdText, exit)
+			}
+		case "mcp_tool_call":
+			if tool, ok := item["tool"].(string); ok {
+				return fmt.Sprintf("[MCP] Tool call: %s\n", tool)
+			}
+		}
+	case "turn.completed":
+		if usage, ok := msg["usage"].(map[string]interface{}); ok {
+			si.Usage.InputTokens = intField(usage, "input_tokens")
+			si.Usage.OutputTokens = intField(usage, "output_tokens")
+		}
+	}
+	return ""
 }
