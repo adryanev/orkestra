@@ -1,25 +1,23 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/adryanev/orkestra/pkg/mcp"
-	"github.com/adryanev/orkestra/pkg/process"
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-var ( 
-	cfgFile string
-	configDir string
-	wm *workspace.Manager
-	pm *process.ProcessManager
+var (
+	cfgFile     string
+	configDir   string
+	jsonOutput  bool
+	wm          *workspace.Manager
 	agentRunner *runner.Runner
-	mcpServer *mcp.Server
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -38,9 +36,7 @@ running agents, and interacting with them via the MCP protocol.`,
 			return fmt.Errorf("failed to initialize workspace manager: %w", err)
 		}
 
-		pm = process.NewProcessManager()
 		agentRunner = runner.NewRunner(wm)
-		mcpServer = mcp.NewServer(wm)
 
 		return nil
 	},
@@ -55,9 +51,11 @@ func Execute() {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
+	// initConfig runs once via PersistentPreRunE; registering it with
+	// cobra.OnInitialize too would load config (and print "Using config file")
+	// twice per command.
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.orkestra/.orkestra.yaml)")
+	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit structured JSON output")
 
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(workspaceCmd)
@@ -69,21 +67,20 @@ func init() {
 }
 
 func initConfig() {
+	// Resolve the single config directory: XORKESTRA_HOME wins, otherwise
+	// ~/.orkestra. Every state file resolves under this directory (R7).
+	configDir = resolveConfigDir()
+
+	vpr := viper.GetViper()
+	vpr.SetEnvPrefix("XORKESTRA")
+	vpr.AutomaticEnv()
+
 	if cfgFile != "" {
-		vpr := viper.New()
 		vpr.SetConfigFile(cfgFile)
 		if err := vpr.ReadInConfig(); err != nil {
 			cobra.CheckErr(err)
 		}
 	} else {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error finding home directory: %v\n", err)
-			os.Exit(1)
-		}
-
-		configDir = filepath.Join(home, ".orkestra")
-		vpr := viper.New()
 		vpr.AddConfigPath(configDir)
 		vpr.SetConfigName(".orkestra")
 		vpr.SetConfigType("yaml")
@@ -96,12 +93,44 @@ func initConfig() {
 			}
 		}
 	}
-
-	vpr := viper.GetViper()
-	vpr.SetEnvPrefix("XORKESTRA")
-	vpr.AutomaticEnv()
 }
 
-func printJSON(data interface{}) {
-	fmt.Println(data)
+// resolveConfigDir returns XORKESTRA_HOME when set, otherwise ~/.orkestra.
+func resolveConfigDir() string {
+	if home := os.Getenv("XORKESTRA_HOME"); home != "" {
+		return home
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error finding home directory: %v\n", err)
+		os.Exit(1)
+	}
+	return filepath.Join(home, ".orkestra")
+}
+
+// emitResult prints either a human-readable line or, under --json, the data
+// value as indented JSON on stdout.
+func emitResult(human string, data interface{}) {
+	if jsonOutput {
+		b, err := json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			emitError(fmt.Errorf("failed to encode JSON output: %w", err))
+			return
+		}
+		fmt.Println(string(b))
+		return
+	}
+	fmt.Println(human)
+}
+
+// emitError reports err and exits non-zero. Under --json it writes a structured
+// {"error": "..."} object to stderr; otherwise a plain "Error: ..." line.
+func emitError(err error) {
+	if jsonOutput {
+		b, _ := json.MarshalIndent(map[string]string{"error": err.Error()}, "", "  ")
+		fmt.Fprintln(os.Stderr, string(b))
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	}
+	os.Exit(1)
 }

@@ -1,19 +1,44 @@
 package gitauth
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
-// ResolveToken gets the GH token for a specific gh profile.
-// Runs: gh auth token --user <profile>
-// Returns the trimmed token string or error.
+// resolveTimeout bounds the `gh auth token` call so a stuck gh process (network
+// auth, credential helper prompt) cannot hang the command that needs the token.
+const resolveTimeout = 10 * time.Second
+
+// execCommandContext is overridable in tests.
+var execCommandContext = exec.CommandContext
+
+// ResolveToken gets the GH token for a specific gh profile under a default
+// deadline. Runs: gh auth token --user <profile>.
 func ResolveToken(profile string) (string, error) {
-	cmd := exec.Command("gh", "auth", "token", "--user", profile)
+	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+	defer cancel()
+	return ResolveTokenContext(ctx, profile)
+}
+
+// ResolveTokenContext resolves the token under the caller's context, so a
+// timeout or cancellation aborts the gh call rather than blocking.
+func ResolveTokenContext(ctx context.Context, profile string) (string, error) {
+	// With no profile, omit --user so gh uses its active account; passing an
+	// empty --user value makes gh fail.
+	args := []string{"auth", "token"}
+	if profile != "" {
+		args = append(args, "--user", profile)
+	}
+	cmd := execCommandContext(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve token for profile %q: %w", profile, err)
+		if profile != "" {
+			return "", fmt.Errorf("failed to resolve token for profile %q: %w", profile, err)
+		}
+		return "", fmt.Errorf("failed to resolve token: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

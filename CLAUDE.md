@@ -1,6 +1,6 @@
-# Orkestra — Hermes Agent Orchestrator
+# Orkestra — Agent Orchestration CLI
 
-CLI tool + MCP server that bridges the gaps between Hermes CE workflow and full-featured agent orchestration (inspired by Korlap).
+CLI tool + MCP server for managing isolated agent workspaces, running Claude Code or Codex, and exposing workspace-aware MCP/LSP tools.
 
 ## Stack
 
@@ -16,12 +16,17 @@ CLI tool + MCP server that bridges the gaps between Hermes CE workflow and full-
 ~/.orkestra/
   workspaces.json        — workspace registry
   sessions.json          — session_id / thread_id per workspace
-  worktrees/<id>/        — git worktrees (cloned repos)
+  worktrees/<id>/        — git worktrees (linked working dirs sharing the repo object DB, not separate clones)
   mcp/<ws-id>.json       — MCP config files injected to agents
 
 orkestra                — CLI entrypoint
 orkestra mcp            — MCP server (stdio mode), agent calls back
 ```
+
+## Project Knowledge
+
+- `docs/solutions/` — documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
+- `CONCEPTS.md` — shared domain vocabulary for project-specific entities, named processes, and status concepts. Relevant when orienting to the codebase or discussing Orkestra domain concepts.
 
 ## What to build (Phase 1 MVP)
 
@@ -98,5 +103,5 @@ orkestra mcp            — MCP server (stdio mode), agent calls back
 
 - **Why not Tauri/Rust?** Hermes runs on Linux VPS, not macOS. Go binary is portable, zero native deps, same language as Lexicon MCPs.
 - **State**: JSON files, not DB. Simpler, grep-able, human-editable for debugging.
-- **MCP**: stdio mode only. The orchestrator spawns the MCP server alongside the agent, agent calls back via Korlap MCP tool.
+- **MCP**: stdio mode only. The orchestrator spawns the MCP server alongside the agent, and the agent calls back through workspace-bound tools.
 - **Session IDs**: Claude uses `session_id`, Codex uses `thread_id`. Both saved in sessions.json as `{workspace_id: {agent: "claude", id: "..."}}`.

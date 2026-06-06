@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 )
+
 var stopWorkspace string
 
 var stopCmd = &cobra.Command{
@@ -13,24 +13,17 @@ var stopCmd = &cobra.Command{
 	Short: "Stop a running agent process",
 	Run: func(cmd *cobra.Command, args []string) {
 		if stopWorkspace == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --workspace is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--workspace is required"))
 		}
+		// The runner signals the agent's process group, clears process state,
+		// and marks the workspace inactive (all under the cross-process lock).
 		if err := agentRunner.Stop(stopWorkspace); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
-		// Update workspace status to inactive
-		ws, err := wm.GetWorkspace(stopWorkspace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not get workspace: %v\n", err)
-		} else {
-			ws.Status = "inactive"
-			if err := wm.Save(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to save workspace status: %v\n", err)
-			}
-		}
-		fmt.Printf("Workspace %s stopped\n", stopWorkspace)
+		emitResult(
+			fmt.Sprintf("Workspace %s stopped", stopWorkspace),
+			map[string]string{"workspace_id": stopWorkspace, "status": "stopped"},
+		)
 	},
 }
 

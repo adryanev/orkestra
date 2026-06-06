@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/spf13/cobra"
@@ -19,37 +18,31 @@ var resumeCmd = &cobra.Command{
 	Short: "Resume a previous agent session",
 	Run: func(cmd *cobra.Command, args []string) {
 		if resumeWorkspace == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --workspace is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--workspace is required"))
 		}
 		if resumePrompt == "" && len(args) == 0 {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: prompt required")
-			os.Exit(1)
+			emitError(fmt.Errorf("prompt required (--prompt or argument)"))
 		}
 		prompt := resumePrompt
 		if prompt == "" {
 			prompt = args[0]
 		}
 
-		// Check saved session
-		_, err := wm.GetSession(resumeWorkspace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: no saved session found (starting fresh): %v\n", err)
-		}
-
-		a := runner.Claude
-		if resumeAgent == "codex" {
+		var a runner.AgentType
+		switch resumeAgent {
+		case "claude":
+			a = runner.Claude
+		case "codex":
 			a = runner.Codex
+		default:
+			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", resumeAgent))
 		}
 
-		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false)
+		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			emitError(err)
 		}
-		if sessionInfo != nil && sessionInfo.SessionID != "" {
-			fmt.Printf("Resumed session: %s\n", sessionInfo.SessionID)
-		}
+		reportSession(resumeWorkspace, sessionInfo)
 	},
 }
 

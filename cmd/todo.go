@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/adryanev/orkestra/pkg/state"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -20,11 +21,10 @@ type Todo struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
-var todoFile string
-
-func init() {
-	home, _ := os.UserHomeDir()
-	todoFile = filepath.Join(home, ".orkestra", "todos.json")
+// todoFile resolves the todos path under the active config dir at call time,
+// so XORKESTRA_HOME and --config are honored (init() runs before they resolve).
+func todoFile() string {
+	return filepath.Join(getConfigDir(), "todos.json")
 }
 
 var todoCmd = &cobra.Command{
@@ -41,11 +41,9 @@ var todoCreateCmd = &cobra.Command{
 		ws, _ := cmd.Flags().GetString("workspace")
 
 		if title == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --title is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--title is required"))
 		}
 
-		todos := loadTodos()
 		todo := Todo{
 			ID:          uuid.New().String(),
 			Title:       title,
@@ -54,11 +52,16 @@ var todoCreateCmd = &cobra.Command{
 			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 			WorkspaceID: ws,
 		}
-		todos = append(todos, todo)
-		saveTodos(todos)
+		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			return append(todos, todo), nil
+		}); err != nil {
+			emitError(err)
+		}
 
-		data, _ := json.MarshalIndent(todo, "", "  ")
-		fmt.Println(string(data))
+		emitResult(
+			fmt.Sprintf("Created todo %s: %s", todo.ID[:8], todo.Title),
+			todo,
+		)
 	},
 }
 
@@ -68,10 +71,12 @@ var todoListCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		statusFilter, _ := cmd.Flags().GetString("status")
 		wsFilter, _ := cmd.Flags().GetString("workspace")
-		asJSON, _ := cmd.Flags().GetBool("json")
 
-		todos := loadTodos()
-		var filtered []Todo
+		todos, err := loadTodos()
+		if err != nil {
+			emitError(err)
+		}
+		filtered := []Todo{}
 		for _, t := range todos {
 			if statusFilter != "" && t.Status != statusFilter {
 				continue
@@ -82,9 +87,8 @@ var todoListCmd = &cobra.Command{
 			filtered = append(filtered, t)
 		}
 
-		if asJSON {
-			data, _ := json.MarshalIndent(filtered, "", "  ")
-			fmt.Println(string(data))
+		if jsonOutput {
+			emitResult("", filtered)
 			return
 		}
 
@@ -108,33 +112,29 @@ var todoUpdateCmd = &cobra.Command{
 		status, _ := cmd.Flags().GetString("status")
 
 		if id == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --id is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--id is required"))
 		}
 
-		todos := loadTodos()
-		found := false
-		for i, t := range todos {
-			if t.ID == id {
-				if title != "" {
-					todos[i].Title = title
+		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			for i, t := range todos {
+				if t.ID == id {
+					if title != "" {
+						todos[i].Title = title
+					}
+					if desc != "" {
+						todos[i].Description = desc
+					}
+					if status != "" {
+						todos[i].Status = status
+					}
+					return todos, nil
 				}
-				if desc != "" {
-					todos[i].Description = desc
-				}
-				if status != "" {
-					todos[i].Status = status
-				}
-				found = true
-				break
 			}
+			return nil, fmt.Errorf("todo %s not found", id)
+		}); err != nil {
+			emitError(err)
 		}
-		if !found {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: todo %s not found\n", id)
-			os.Exit(1)
-		}
-		saveTodos(todos)
-		fmt.Println("Todo updated")
+		emitResult("Todo updated", map[string]string{"id": id, "status": "updated"})
 	},
 }
 
@@ -144,52 +144,67 @@ var todoDeleteCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		id, _ := cmd.Flags().GetString("id")
 		if id == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --id is required")
-			os.Exit(1)
+			emitError(fmt.Errorf("--id is required"))
 		}
 
-		todos := loadTodos()
-		found := false
-		for i, t := range todos {
-			if t.ID == id {
-				todos = append(todos[:i], todos[i+1:]...)
-				found = true
-				break
+		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			for i, t := range todos {
+				if t.ID == id {
+					return append(todos[:i], todos[i+1:]...), nil
+				}
 			}
+			return nil, fmt.Errorf("todo %s not found", id)
+		}); err != nil {
+			emitError(err)
 		}
-		if !found {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: todo %s not found\n", id)
-			os.Exit(1)
-		}
-		saveTodos(todos)
-		fmt.Println("Todo deleted")
+		emitResult("Todo deleted", map[string]string{"id": id, "status": "deleted"})
 	},
 }
 
-func loadTodos() []Todo {
-	data, err := os.ReadFile(todoFile)
+func loadTodos() ([]Todo, error) {
+	data, err := state.ReadFile(todoFile())
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []Todo{}
-		}
-		fmt.Fprintf(os.Stderr, "Error reading todos: %v\n", err)
-		return []Todo{}
+		return nil, fmt.Errorf("error reading todos: %w", err)
+	}
+	if len(data) == 0 {
+		return []Todo{}, nil
 	}
 	var todos []Todo
 	if err := json.Unmarshal(data, &todos); err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing todos: %v\n", err)
-		return []Todo{}
+		// Do not coerce a parse failure into empty state: a subsequent save
+		// would overwrite the (recoverable) file with an empty list.
+		return nil, fmt.Errorf("error parsing todos: %w", err)
 	}
-	return todos
+	return todos, nil
 }
 
 func saveTodos(todos []Todo) {
-	os.MkdirAll(filepath.Dir(todoFile), 0755)
 	data, _ := json.MarshalIndent(todos, "", "  ")
-	if err := os.WriteFile(todoFile, data, 0644); err != nil {
+	if err := state.WriteAtomic(todoFile(), data, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving todos: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// mutateTodos performs a lock-spanning read-modify-write so concurrent todo
+// commands cannot clobber each other (same guarantee as the workspace store).
+func mutateTodos(apply func([]Todo) ([]Todo, error)) error {
+	lock, err := state.Acquire(filepath.Join(getConfigDir(), ".state.lock"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+
+	todos, err := loadTodos()
+	if err != nil {
+		return err
+	}
+	updated, err := apply(todos)
+	if err != nil {
+		return err
+	}
+	saveTodos(updated)
+	return nil
 }
 
 func init() {
@@ -199,7 +214,6 @@ func init() {
 
 	todoListCmd.Flags().String("status", "", "Filter by status")
 	todoListCmd.Flags().String("workspace", "", "Filter by workspace")
-	todoListCmd.Flags().Bool("json", false, "JSON output")
 
 	todoUpdateCmd.Flags().String("id", "", "Todo ID")
 	todoUpdateCmd.Flags().String("title", "", "New title")
