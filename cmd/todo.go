@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/adryanev/orkestra/pkg/state"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -20,11 +21,10 @@ type Todo struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
-var todoFile string
-
-func init() {
-	home, _ := os.UserHomeDir()
-	todoFile = filepath.Join(home, ".orkestra", "todos.json")
+// todoFile resolves the todos path under the active config dir at call time,
+// so XORKESTRA_HOME and --config are honored (init() runs before they resolve).
+func todoFile() string {
+	return filepath.Join(getConfigDir(), "todos.json")
 }
 
 var todoCmd = &cobra.Command{
@@ -45,7 +45,6 @@ var todoCreateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		todos := loadTodos()
 		todo := Todo{
 			ID:          uuid.New().String(),
 			Title:       title,
@@ -54,8 +53,12 @@ var todoCreateCmd = &cobra.Command{
 			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 			WorkspaceID: ws,
 		}
-		todos = append(todos, todo)
-		saveTodos(todos)
+		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			return append(todos, todo), nil
+		}); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 		data, _ := json.MarshalIndent(todo, "", "  ")
 		fmt.Println(string(data))
@@ -112,28 +115,26 @@ var todoUpdateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		todos := loadTodos()
-		found := false
-		for i, t := range todos {
-			if t.ID == id {
-				if title != "" {
-					todos[i].Title = title
+		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			for i, t := range todos {
+				if t.ID == id {
+					if title != "" {
+						todos[i].Title = title
+					}
+					if desc != "" {
+						todos[i].Description = desc
+					}
+					if status != "" {
+						todos[i].Status = status
+					}
+					return todos, nil
 				}
-				if desc != "" {
-					todos[i].Description = desc
-				}
-				if status != "" {
-					todos[i].Status = status
-				}
-				found = true
-				break
 			}
-		}
-		if !found {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: todo %s not found\n", id)
+			return nil, fmt.Errorf("todo %s not found", id)
+		}); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
 			os.Exit(1)
 		}
-		saveTodos(todos)
 		fmt.Println("Todo updated")
 	},
 }
@@ -148,31 +149,28 @@ var todoDeleteCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		todos := loadTodos()
-		found := false
-		for i, t := range todos {
-			if t.ID == id {
-				todos = append(todos[:i], todos[i+1:]...)
-				found = true
-				break
+		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			for i, t := range todos {
+				if t.ID == id {
+					return append(todos[:i], todos[i+1:]...), nil
+				}
 			}
-		}
-		if !found {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: todo %s not found\n", id)
+			return nil, fmt.Errorf("todo %s not found", id)
+		}); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
 			os.Exit(1)
 		}
-		saveTodos(todos)
 		fmt.Println("Todo deleted")
 	},
 }
 
 func loadTodos() []Todo {
-	data, err := os.ReadFile(todoFile)
+	data, err := state.ReadFile(todoFile())
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []Todo{}
-		}
 		fmt.Fprintf(os.Stderr, "Error reading todos: %v\n", err)
+		return []Todo{}
+	}
+	if len(data) == 0 {
 		return []Todo{}
 	}
 	var todos []Todo
@@ -184,12 +182,29 @@ func loadTodos() []Todo {
 }
 
 func saveTodos(todos []Todo) {
-	os.MkdirAll(filepath.Dir(todoFile), 0755)
 	data, _ := json.MarshalIndent(todos, "", "  ")
-	if err := os.WriteFile(todoFile, data, 0644); err != nil {
+	if err := state.WriteAtomic(todoFile(), data, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving todos: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// mutateTodos performs a lock-spanning read-modify-write so concurrent todo
+// commands cannot clobber each other (same guarantee as the workspace store).
+func mutateTodos(apply func([]Todo) ([]Todo, error)) error {
+	lock, err := state.Acquire(filepath.Join(getConfigDir(), ".state.lock"))
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	todos := loadTodos()
+	updated, err := apply(todos)
+	if err != nil {
+		return err
+	}
+	saveTodos(updated)
+	return nil
 }
 
 func init() {
