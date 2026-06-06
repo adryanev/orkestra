@@ -1,7 +1,7 @@
 ---
 title: "fix: Make orkestra stable and functional"
 type: fix
-status: active
+status: completed
 date: 2026-06-06
 ---
 
