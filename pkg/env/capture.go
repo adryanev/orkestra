@@ -1,6 +1,6 @@
 // Package env captures the user's interactive login-shell environment so
 // spawned agents see the same PATH and variables a terminal session would
-// (nvm/fvm/asdf PATH entries, GOPATH, etc.).
+// (nvm/fnm/asdf PATH entries, GOPATH, etc.).
 //
 // Filtering policy: the full captured environment is forwarded to the agent by
 // design — orkestra runs trusted agents and the purpose of the capture is
@@ -158,6 +158,30 @@ func lookPathIn(name, path string) string {
 		}
 	}
 	return ""
+}
+
+// LookPath resolves an executable name against the captured login-shell PATH,
+// so a server installed via nvm/fnm/asdf resolves the same way it would in a
+// terminal. It returns an absolute path, or "" when not found.
+func LookPath(name string) string {
+	return lookPathIn(name, Captured().Path)
+}
+
+// Environ returns the process environment overlaid with the captured
+// login-shell variables (last wins), suitable for child processes that need
+// terminal parity, such as language servers.
+func Environ() []string {
+	merged := envMapFromCurrent()
+	if c := Captured(); c != nil {
+		for k, v := range c.AllVars {
+			merged[k] = v
+		}
+	}
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 func envMapFromCurrent() map[string]string {

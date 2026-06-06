@@ -86,6 +86,11 @@ func NewManager(configDir string) (*Manager, error) {
 	return manager, nil
 }
 
+// ConfigDir returns the resolved config directory backing this manager.
+func (m *Manager) ConfigDir() string {
+	return m.configDir
+}
+
 func (m *Manager) load() error {
 	m.Lock()
 	defer m.Unlock()
@@ -273,6 +278,17 @@ func (m *Manager) UpdateWorkspaceStatus(id, status string) error {
 			return fmt.Errorf("workspace with id %s not found", id)
 		}
 		ws.Status = status
+		return nil
+	})
+}
+
+func (m *Manager) UpdateWorkspaceBranch(id, branch string) error {
+	return m.mutate(func() error {
+		ws, ok := m.workspaces[id]
+		if !ok {
+			return fmt.Errorf("workspace with id %s not found", id)
+		}
+		ws.Branch = branch
 		return nil
 	})
 }

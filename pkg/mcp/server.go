@@ -1,234 +1,230 @@
+// Package mcp implements orkestra's MCP server (JSON-RPC 2.0 over stdio, via the
+// official Go SDK) and the language-server tools the agent calls back into.
+//
+// Stdout discipline (KTD8): the SDK owns stdout for the JSON-RPC stream. Every
+// log or diagnostic in this package goes to stderr or a file; a stray write to
+// stdout corrupts the protocol.
 package mcp
 
 import (
-	"bufio"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
-	"sync"
+	"time"
 
 	"github.com/adryanev/orkestra/pkg/workspace"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Server handles MCP communication over stdio.
+const (
+	serverName    = "orkestra"
+	serverVersion = "0.1.0"
+	gitCmdTimeout = 10 * time.Second
+)
+
+// Server is the orkestra MCP server, fixed to a single workspace for the
+// session (as Korlap fixes KORLAP_WORKSPACE_ID). LSP tool arguments carry file
+// paths relative to that workspace's worktree.
 type Server struct {
-	workspaceManager *workspace.Manager
-	lspManager       *LspManager
-	stdin            *bufio.Scanner
-	stdout           io.Writer
-	mu               sync.Mutex
-	active           bool
+	wm          *workspace.Manager
+	workspaceID string
+	root        string
+	pool        *LspPool
 }
 
-// NewServer creates a new MCP server.
-func NewServer(wm *workspace.Manager) *Server {
+// NewServer builds an MCP server bound to workspaceID. The workspace must exist
+// because every tool resolves against its worktree.
+func NewServer(wm *workspace.Manager, workspaceID string, lspOverrides []LspServerConfig) (*Server, error) {
+	ws, err := wm.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("mcp server requires a valid --workspace: %w", err)
+	}
 	return &Server{
-		workspaceManager: wm,
-		lspManager:       NewLspManager(),
-		stdin:            bufio.NewScanner(os.Stdin),
-		stdout:           os.Stdout,
-		active:           true,
-	}
-}
-
-// Listen starts the MCP server's main loop.
-func (s *Server) Listen() {
-	s.mu.Lock()
-	s.active = true
-	s.mu.Unlock()
-
-	for s.active && s.stdin.Scan() {
-		line := s.stdin.Text()
-		var request map[string]interface{}
-
-		err := json.Unmarshal([]byte(line), &request)
-		if err != nil {
-			s.sendResponse(nil, fmt.Sprintf("invalid JSON received: %v", err))
-			continue
-		}
-
-		toolName, ok := request["tool_name"].(string)
-		if !ok {
-			s.sendResponse(nil, "missing 'tool_name' in request")
-			continue
-		}
-
-		args, _ := request["arguments"].(map[string]interface{})
-
-		var result interface{}
-		var errResp error
-
-		switch toolName {
-		case "get_workspace_info":
-			result, errResp = s.getWorkspaceInfo(args)
-		case "rename_branch":
-			result, errResp = s.renameBranch(args)
-		case "notify":
-			result, errResp = s.notify(args)
-		// LSP Tools Registration
-		case "lsp_goto_definition":
-			filePath, _ := args["file_path"].(string)
-			line, _ := args["line"].(float64)
-			character, _ := args["character"].(float64)
-			wsID, _ := args["workspace_id"].(string)
-			handle, err := s.lspManager.GetOrStart("", wsID)
-			if err != nil {
-				errResp = err
-			} else {
-				result, errResp = lspGotoDefinition(handle, filePath, int(line), int(character))
-			}
-		case "lsp_hover":
-			filePath, _ := args["file_path"].(string)
-			line, _ := args["line"].(float64)
-			character, _ := args["character"].(float64)
-			wsID, _ := args["workspace_id"].(string)
-			handle, err := s.lspManager.GetOrStart("", wsID)
-			if err != nil {
-				errResp = err
-			} else {
-				result, errResp = lspHover(handle, filePath, int(line), int(character))
-			}
-		case "lsp_references":
-			filePath, _ := args["file_path"].(string)
-			line, _ := args["line"].(float64)
-			character, _ := args["character"].(float64)
-			wsID, _ := args["workspace_id"].(string)
-			handle, err := s.lspManager.GetOrStart("", wsID)
-			if err != nil {
-				errResp = err
-			} else {
-				result, errResp = lspReferences(handle, filePath, int(line), int(character))
-			}
-		case "lsp_diagnostics":
-			filePath, _ := args["file_path"].(string)
-			wsID, _ := args["workspace_id"].(string)
-			handle, err := s.lspManager.GetOrStart("", wsID)
-			if err != nil {
-				errResp = err
-			} else {
-				result, errResp = lspDiagnostics(handle, filePath)
-			}
-		case "lsp_rename":
-			filePath, _ := args["file_path"].(string)
-			line, _ := args["line"].(float64)
-			character, _ := args["character"].(float64)
-			newName, _ := args["new_name"].(string)
-			wsID, _ := args["workspace_id"].(string)
-			handle, err := s.lspManager.GetOrStart("", wsID)
-			if err != nil {
-				errResp = err
-			} else {
-				result, errResp = lspRename(handle, filePath, int(line), int(character), newName)
-			}
-		default:
-			errResp = fmt.Errorf("unknown tool: %s", toolName)
-		}
-
-		if errResp != nil {
-			s.sendResponse(nil, errResp.Error())
-		} else {
-			s.sendResponse(result, "")
-		}
-	}
-
-	if err := s.stdin.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "MCP stdin error: %v\n", err)
-	}
-	s.mu.Lock()
-	s.active = false
-	s.mu.Unlock()
-}
-
-// Stop terminates the MCP server.
-func (s *Server) Stop() {
-	s.mu.Lock()
-	s.active = false
-	s.mu.Unlock()
-	// Signal stdin to close if needed, or rely on the process exit usually handles this.
-}
-
-func (s *Server) sendResponse(result interface{}, errMsg string) {
-	response := map[string]interface{}{
-		"result": result,
-		"error":  errMsg,
-	}
-	responseJSON, _ := json.Marshal(response)
-	fmt.Fprintln(s.stdout, string(responseJSON))
-}
-
-// Tool Implementations
-
-func (s *Server) getWorkspaceInfo(args map[string]interface{}) (interface{}, error) {
-	id, ok := args["id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing 'id' argument for get_workspace_info")
-	}
-
-	ws, err := s.workspaceManager.GetWorkspace(id)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get workspace info: %w", err)
-	}
-
-	return map[string]string{
-		"id":           ws.ID,
-		"name":         ws.Name,
-		"repo_path":    ws.RepoPath,
-		"worktree_path": ws.WorktreePath,
-		"branch":       ws.Branch,
-		"status":       ws.Status,
+		wm:          wm,
+		workspaceID: workspaceID,
+		root:        ws.WorktreePath,
+		pool:        NewLspPool(ws.WorktreePath, lspOverrides),
 	}, nil
 }
 
-func (s *Server) renameBranch(args map[string]interface{}) (interface{}, error) {
-	id, ok := args["id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing 'id' argument for rename_branch")
-	}
+// buildServer constructs the SDK server with all tools registered.
+func (s *Server) buildServer() *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
+	s.register(srv)
+	return srv
+}
 
-	newBranch, ok := args["new_branch"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing 'new_branch' argument for rename_branch")
-	}
+// Run registers the tools and serves JSON-RPC over stdio until the context is
+// cancelled or stdin closes.
+func (s *Server) Run(ctx context.Context) error {
+	defer s.pool.Shutdown()
+	return s.buildServer().Run(ctx, &mcp.StdioTransport{})
+}
 
-	ws, err := s.workspaceManager.GetWorkspace(id)
+// --- tool input/output types (the SDK derives JSON Schemas from these) ---
+
+type workspaceIDInput struct {
+	ID string `json:"id" jsonschema:"registered workspace id"`
+}
+
+type workspaceInfoOutput struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	RepoPath     string `json:"repo_path"`
+	WorktreePath string `json:"worktree_path"`
+	Branch       string `json:"branch"`
+	Status       string `json:"status"`
+}
+
+type renameBranchInput struct {
+	ID        string `json:"id" jsonschema:"registered workspace id"`
+	NewBranch string `json:"new_branch" jsonschema:"new git branch name"`
+}
+
+type notifyInput struct {
+	ID      string `json:"id" jsonschema:"registered workspace id"`
+	Message string `json:"message" jsonschema:"message to append to the workspace log"`
+}
+
+type messageOutput struct {
+	Message string `json:"message"`
+}
+
+type positionInput struct {
+	FilePath  string `json:"file_path" jsonschema:"path relative to the workspace worktree"`
+	Line      int    `json:"line" jsonschema:"1-based line number"`
+	Character int    `json:"character" jsonschema:"1-based column number"`
+}
+
+type fileInput struct {
+	FilePath string `json:"file_path" jsonschema:"path relative to the workspace worktree"`
+}
+
+type symbolInput struct {
+	Query string `json:"query" jsonschema:"workspace symbol query"`
+}
+
+type renameInput struct {
+	FilePath  string `json:"file_path" jsonschema:"path relative to the workspace worktree"`
+	Line      int    `json:"line" jsonschema:"1-based line number"`
+	Character int    `json:"character" jsonschema:"1-based column number"`
+	NewName   string `json:"new_name" jsonschema:"new symbol name"`
+}
+
+type textOutput struct {
+	Text string `json:"text"`
+}
+
+// register installs every tool. Tools use typed structs so the SDK validates
+// required fields before the handler runs.
+func (s *Server) register(srv *mcp.Server) {
+	mcp.AddTool(srv, &mcp.Tool{Name: "get_workspace_info", Description: "Return path, branch, and status for a workspace."}, s.getWorkspaceInfo)
+	mcp.AddTool(srv, &mcp.Tool{Name: "rename_branch", Description: "Rename the git branch of a workspace."}, s.renameBranch)
+	mcp.AddTool(srv, &mcp.Tool{Name: "notify", Description: "Append a message to the workspace log file."}, s.notify)
+
+	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_goto_definition", Description: "Go to the definition of the symbol at a position."}, s.lspGotoDefinition)
+	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_find_references", Description: "Find references to the symbol at a position."}, s.lspFindReferences)
+	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_hover", Description: "Show hover information for the symbol at a position."}, s.lspHover)
+	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_workspace_symbols", Description: "Search workspace symbols by query."}, s.lspWorkspaceSymbols)
+	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_diagnostics", Description: "Return diagnostics for a file."}, s.lspDiagnostics)
+	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_rename", Description: "Rename a symbol across the workspace and apply the edits."}, s.lspRename)
+}
+
+func text(s string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+}
+
+// --- workspace tools ---
+
+func (s *Server) getWorkspaceInfo(ctx context.Context, _ *mcp.CallToolRequest, in workspaceIDInput) (*mcp.CallToolResult, workspaceInfoOutput, error) {
+	ws, err := s.wm.GetWorkspace(in.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get workspace for renaming: %w", err)
+		return nil, workspaceInfoOutput{}, fmt.Errorf("failed to get workspace info: %w", err)
+	}
+	out := workspaceInfoOutput{
+		ID: ws.ID, Name: ws.Name, RepoPath: ws.RepoPath,
+		WorktreePath: ws.WorktreePath, Branch: ws.Branch, Status: ws.Status,
+	}
+	return text(fmt.Sprintf("%s (%s) on %s [%s] at %s", out.Name, out.ID, out.Branch, out.Status, out.WorktreePath)), out, nil
+}
+
+func (s *Server) renameBranch(ctx context.Context, _ *mcp.CallToolRequest, in renameBranchInput) (*mcp.CallToolResult, messageOutput, error) {
+	ws, err := s.wm.GetWorkspace(in.ID)
+	if err != nil {
+		return nil, messageOutput{}, fmt.Errorf("failed to get workspace: %w", err)
+	}
+	// Reject names git itself would reject before touching the repo (R20).
+	if err := validBranchName(s.root, in.NewBranch); err != nil {
+		return nil, messageOutput{}, err
 	}
 
-	// Actually rename git branch
-	cmd := exec.Command("git", "branch", "-m", newBranch)
+	rctx, cancel := context.WithTimeout(ctx, gitCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(rctx, "git", "branch", "-m", in.NewBranch)
 	cmd.Dir = ws.WorktreePath
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to rename git branch: %w", err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, messageOutput{}, fmt.Errorf("failed to rename branch: %w: %s", err, out)
+	}
+	if err := s.wm.UpdateWorkspaceBranch(in.ID, in.NewBranch); err != nil {
+		return nil, messageOutput{}, fmt.Errorf("branch renamed but state update failed: %w", err)
 	}
 
-	ws.Branch = newBranch
-	if err := s.workspaceManager.Save(); err != nil {
-		return nil, fmt.Errorf("failed to save workspace after branch rename: %w", err)
-	}
-
-	return map[string]string{
-		"message": fmt.Sprintf("Branch for workspace %s renamed to %s", id, newBranch),
-	}, nil
+	msg := fmt.Sprintf("Branch for workspace %s renamed to %s", in.ID, in.NewBranch)
+	return text(msg), messageOutput{Message: msg}, nil
 }
 
-func (s *Server) notify(args map[string]interface{}) (interface{}, error) {
-	id, ok := args["id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing 'id' argument for notify")
+func (s *Server) notify(ctx context.Context, _ *mcp.CallToolRequest, in notifyInput) (*mcp.CallToolResult, messageOutput, error) {
+	path, err := notifyWorkspace(s.wm, in.ID, in.Message)
+	if err != nil {
+		return nil, messageOutput{}, err
 	}
+	msg := fmt.Sprintf("Notification logged to %s", path)
+	return text(msg), messageOutput{Message: msg}, nil
+}
 
-	message, ok := args["message"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing 'message' argument for notify")
+// --- LSP tools ---
+
+func (s *Server) lspGotoDefinition(ctx context.Context, _ *mcp.CallToolRequest, in positionInput) (*mcp.CallToolResult, textOutput, error) {
+	return lspText(s.pool.GotoDefinition(in.FilePath, in.Line, in.Character))
+}
+
+func (s *Server) lspFindReferences(ctx context.Context, _ *mcp.CallToolRequest, in positionInput) (*mcp.CallToolResult, textOutput, error) {
+	return lspText(s.pool.FindReferences(in.FilePath, in.Line, in.Character))
+}
+
+func (s *Server) lspHover(ctx context.Context, _ *mcp.CallToolRequest, in positionInput) (*mcp.CallToolResult, textOutput, error) {
+	return lspText(s.pool.Hover(in.FilePath, in.Line, in.Character))
+}
+
+func (s *Server) lspWorkspaceSymbols(ctx context.Context, _ *mcp.CallToolRequest, in symbolInput) (*mcp.CallToolResult, textOutput, error) {
+	return lspText(s.pool.WorkspaceSymbols(in.Query))
+}
+
+func (s *Server) lspDiagnostics(ctx context.Context, _ *mcp.CallToolRequest, in fileInput) (*mcp.CallToolResult, textOutput, error) {
+	return lspText(s.pool.Diagnostics(in.FilePath))
+}
+
+func (s *Server) lspRename(ctx context.Context, _ *mcp.CallToolRequest, in renameInput) (*mcp.CallToolResult, textOutput, error) {
+	return lspText(s.pool.Rename(in.FilePath, in.Line, in.Character, in.NewName))
+}
+
+// lspText adapts a (string, error) tool result to the SDK handler shape.
+func lspText(out string, err error) (*mcp.CallToolResult, textOutput, error) {
+	if err != nil {
+		return nil, textOutput{}, err
 	}
+	return text(out), textOutput{Text: out}, nil
+}
 
-	// TODO: Implement notification logic (e.g., writing to a workspace-specific log file)
-	fmt.Printf("[Workspace Notification - %s]: %s\n", id, message)
-
-	return map[string]string{
-		"message": fmt.Sprintf("Notification sent for workspace %s", id),
-	}, nil
+// validBranchName rejects names that git would reject, using
+// `git check-ref-format --branch` (R20).
+func validBranchName(dir, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "check-ref-format", "--branch", name)
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("invalid branch name %q", name)
+	}
+	return nil
 }

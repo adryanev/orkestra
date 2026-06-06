@@ -1,48 +1,63 @@
 # Orkestra
 
-**Orkestra** (from Indonesian *orkestrasi* — orchestration) is a CLI tool that bridges the gap between Hermes Agent's Compound Engineering workflow and full-featured agent orchestration, inspired by [Korlap](https://github.com/ariaghora/korlap).
+**Orkestra** (from Indonesian *orkestrasi*, orchestration) is a CLI for running Claude Code and Codex in isolated git workspaces while keeping enough state to stop, resume, stream, and inspect those agent sessions from another process.
 
-## Concept
+Use it when a controller such as a developer shell, CI job, MCP client, Hermes, OpenClaw, or other automation needs to launch an agent, follow its output, and come back to the same session later.
 
-When Hermes delegates coding tasks to Claude Code or Codex CLI, it traditionally uses `delegate_task` — a blocking wrapper that returns after the agent finishes. Orkestra gives Hermes **structured, session-aware control** over agent processes:
+## What It Does
 
-```
-Hermes (orchestrator)
-  │
-  ├─ orkestra run --workspace ws-1 --prompt "fix bug" --agent claude
-  │     ↓
-  │   Spawns Claude -p --output-format stream-json --verbose
-  │   Parses NDJSON live: session_id, text, usage, tool calls
-  │   Saves session → ~/.orkestra/sessions.json
-  │
-  ├─ orkestra resume --workspace ws-1 --prompt "lanjut"
-  │     ↓
-  │   Reads saved session_id → Claude --resume <id>
-  │
-  ├─ orkestra stop --workspace ws-1
-  │     ↓
-  │   Kills agent process
-  │
-  └─ orkestra todo create --title "review PR"
-       ↓
-     Kanban-style task management
-```
-
-## Features
-
-| Feature | Description |
+| Capability | What Orkestra handles |
 |---|---|
-| **Dual agent support** | Claude Code (`-p --output-format stream-json`) and Codex (`exec --json`) |
-| **Session lifecycle** | Capture session_id/thread_id, save, resume later |
-| **Structured output** | Parse NDJSON (Claude) and JSONL (Codex) for text, usage, tool calls |
-| **Git worktree isolation** | Workspaces live in app data dir, zero files in managed repo |
-| **Git auth** | Per-process GH_TOKEN injection via `gh auth token --user <profile>` — never `gh auth switch` |
-| **Streaming mode** | `orkestra run --stream` outputs raw NDJSON/JSONL for live consumption |
-| **Shell env capture** | Captures full user env from login shell (PATH, nvm/fnm, GOPATH) |
-| **MCP server** | Stdio-based server with tools: workspace info, rename branch, notify, LSP |
-| **LSP tools** | Go-to-definition, hover, references, diagnostics, rename via gopls |
-| **Todo management** | Kanban-style CRUD with JSON persistence |
-| **Process management** | Start, monitor, kill agent processes |
+| Isolated workspaces | Creates git worktrees under the Orkestra state directory |
+| Agent execution | Runs Claude Code or Codex with the right prompt and working directory |
+| Session resume | Stores Claude `session_id` and Codex `thread_id` per workspace |
+| Streaming output | Emits parsed text by default or raw NDJSON/JSONL with `--stream` |
+| GitHub auth | Injects `GH_TOKEN` per process from `gh auth token --user <profile>` |
+| Shell environment | Captures login-shell env so tools from nvm, fnm, asdf, Go, and similar managers are available |
+| MCP tools | Exposes workspace and LSP tools over stdio |
+| Todos | Stores a small workspace-aware task list in JSON |
+
+## How It Works
+
+```mermaid
+flowchart TD
+    controller["Controller<br/>shell, CI, MCP client,<br/>Hermes, OpenClaw"]
+    cli["orkestra CLI"]
+    registry["workspace registry<br/>workspaces.json"]
+    worktree["git worktree<br/>worktrees/{workspace_id}"]
+    env["login-shell environment<br/>PATH, nvm/fnm, GOPATH"]
+    auth["optional GitHub token<br/>gh auth token --user profile"]
+    agent["agent process<br/>Claude Code or Codex"]
+    output["parsed text output<br/>or raw --stream NDJSON/JSONL"]
+    session["session store<br/>sessions.json"]
+    todo["todo store<br/>todos.json"]
+    mcp["optional stdio MCP server<br/>workspace and LSP tools"]
+
+    controller -->|"init / workspace / run / resume / stop"| cli
+    cli --> registry
+    cli --> worktree
+    cli --> env
+    cli --> auth
+    env --> agent
+    auth --> agent
+    worktree --> agent
+    agent --> output
+    output --> controller
+    agent -->|"session_id / thread_id"| session
+    cli --> todo
+    agent -.->|"tool calls"| mcp
+    mcp --> worktree
+```
+
+The important idea is that Orkestra is a CLI with persistent state. While `run` is active, it records process information so a separate `stop` command can target the child process. When the agent emits a session id or thread id, Orkestra stores it so `resume` can continue that workspace later.
+
+## Requirements
+
+- Go, for building the binary
+- Git, for worktree creation
+- Claude Code and/or Codex CLI, depending on which agent you run
+- GitHub CLI, only when using `--gh-profile`
+- `gopls`, only when using the Go LSP tools through MCP
 
 ## Installation
 
@@ -52,106 +67,139 @@ cd orkestra
 go build -o ~/.local/bin/orkestra ./main.go
 ```
 
-## Usage
+## Quick Start
 
 ```bash
-# Initialize
+# Create the state directory and JSON state files.
 orkestra init
 
-# Create a workspace with GitHub auth profile
-orkestra workspace create --repo ~/code/myproject --name fix-auth --gh-profile my-org
+# Create an isolated worktree for a repository.
+orkestra workspace create \
+  --repo ~/code/myproject \
+  --name fix-auth \
+  --gh-profile my-org
 
-# Run an agent (with streaming for live NDJSON)
-orkestra run --workspace <id> --prompt "Fix the auth middleware" --agent claude
-orkestra run --workspace <id> --prompt "Fix it" --stream  # raw output
+# Find the workspace id.
+orkestra workspace list
 
-# Resume a session
-orkestra resume --workspace <id> --prompt "Continue with tests"
+# Run Claude Code in that workspace.
+orkestra run \
+  --workspace <workspace-id> \
+  --agent claude \
+  --prompt "Fix the auth middleware"
 
-# Stop an agent
-orkestra stop --workspace <id>
+# Continue the saved session.
+orkestra resume \
+  --workspace <workspace-id> \
+  --prompt "Continue with tests"
 
-# Todo management
-orkestra todo create --title "Review PR #42" --description "Code review needed"
-orkestra todo list --status todo
-orkestra todo update --id <uuid> --status review
-orkestra todo delete --id <uuid>
-
-# MCP server (start alongside an agent)
-orkestra mcp
+# Stop the running agent process for the workspace.
+orkestra stop --workspace <workspace-id>
 ```
 
-## Architecture
+Use Codex by switching the agent:
 
+```bash
+orkestra run --workspace <workspace-id> --agent codex --prompt "Fix the failing test"
 ```
-~/.orkestra/
-  workspaces.json    — workspace registry
-  sessions.json      — session_id/thread_id per workspace
-  todos.json         — kanban task list
-  worktrees/<id>/    — git worktrees (cloned repos)
-  mcp/               — MCP config files
 
-orkestra             — CLI entrypoint
-├─ init              — Create ~/.orkestra/ + state files
-├─ workspace create  — Git worktree + register (with --gh-profile)
-├─ workspace list    — List all workspaces with profile info
-├─ run               — Spawn agent (Claude/Codex), optional --stream
-├─ resume            — Resume agent session from saved ID
-├─ stop              — Kill agent process
-├─ mcp               — Start stdio MCP server (LSP + workspace tools)
-└─ todo create/list/update/delete
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `orkestra init` | Creates the Orkestra state directory and initial JSON files |
+| `orkestra workspace create` | Creates a git worktree and registers it as a workspace |
+| `orkestra workspace list` | Lists registered workspaces |
+| `orkestra run` | Starts Claude Code or Codex in a workspace |
+| `orkestra resume` | Continues the saved session for a workspace |
+| `orkestra stop` | Stops the persisted agent process for a workspace |
+| `orkestra todo ...` | Creates, lists, updates, and deletes todos |
+| `orkestra mcp` | Starts the stdio MCP server |
+
+## Workspaces
+
+A workspace is a registered git worktree with an id, name, branch, status, optional GitHub profile, and saved agent session.
+
+```bash
+orkestra workspace create \
+  --repo ~/code/project \
+  --name fix-payment-flow \
+  --branch feature/fix-payment-flow \
+  --gh-profile work
 ```
+
+If `--branch` is omitted, Orkestra creates a branch from the workspace name, for example `orkestra/fix-payment-flow`. Worktrees are created under `~/.orkestra/worktrees/` by default.
+
+## Streaming Output
+
+By default, `orkestra run` parses agent output and prints the useful text, usage, tool calls, and session metadata.
+
+Use `--stream` when another process needs the raw agent event stream:
+
+```bash
+orkestra run --workspace <workspace-id> --prompt "Fix it" --stream
+```
+
+Claude emits NDJSON. Codex emits JSONL.
 
 ## Git Auth
 
-Per-process token injection. Never calls `gh auth switch` globally.
+Workspaces can be tied to a GitHub CLI profile:
 
 ```bash
 orkestra workspace create --repo ~/code/project --name fix --gh-profile my-org
-orkestra run --workspace <id> --prompt "..."  # GH_TOKEN injected automatically
 ```
 
-Token resolved via: `gh auth token --user <profile>` and injected as `GH_TOKEN` env var.
+When an agent runs in that workspace, Orkestra resolves the token with:
 
-## Streaming Mode
+```bash
+gh auth token --user <profile>
+```
 
-`orkestra run --stream` outputs the agent's raw NDJSON (Claude) or JSONL (Codex) directly to stdout instead of the parsed human-readable format. Hermes can consume this for live progress tracking.
+The token is injected as `GH_TOKEN` only for the spawned agent process. Orkestra does not call `gh auth switch` or change global GitHub CLI state.
 
-## LSP Tools (via MCP)
+## MCP and LSP
 
-The MCP server exposes these LSP tools for agents:
+`orkestra mcp` starts a stdio MCP server. It exposes workspace utilities and Go LSP tools for agents:
 
-- `lsp_goto_definition` — Find symbol definition
-- `lsp_hover` — Get type info and docs
-- `lsp_references` — Find all references
-- `lsp_diagnostics` — Get compiler errors/warnings
-- `lsp_rename` — Rename symbol across workspace
+- `get_workspace_info`
+- `rename_branch`
+- `notify`
+- `lsp_goto_definition`
+- `lsp_hover`
+- `lsp_references`
+- `lsp_diagnostics`
+- `lsp_rename`
 
-Uses `gopls` under the hood, managed per-workspace.
+The LSP tools use `gopls` and are scoped to the workspace id passed in each tool request.
 
-## Comparison with Korlap
+## State Files
 
-| Capability | Korlap | Orkestra |
-|---|---|---|
-| Platform | macOS (Tauri + Rust) | Linux/macOS (Go binary) |
-| UI | Desktop app (Svelte 5) | CLI + Hermes renders output |
-| Session streaming | Tauri Channel API | NDJSON/JSONL stdout parsing |
-| Process control | Native Rust PTY | os/exec with goroutine readers |
-| MCP server | Built-in HTTP API + register to agent | Stdio MCP server with LSP tools |
-| Shell env capture | OnceLock + login shell | sync.OnceValue + login shell |
-| Git auth | `gh auth token --user` | Same |
-| LSP integration | Agent-side via MCP tools | Via gopls + MCP tools |
-| Kanban | 4-column drag-drop UI | CLI todo commands |
-| Persistence | JSON files in app data dir | JSON files in ~/.orkestra/ |
+Orkestra stores state in `~/.orkestra` by default:
 
-## Design Decisions
+```text
+~/.orkestra/
+  workspaces.json
+  sessions.json
+  todos.json
+  worktrees/{workspace_id}/
+```
 
-- **Go, not Rust/Tauri** — Portable single binary, same stack as Lexicon MCPs, runs on Linux VPS where Hermes lives
-- **JSON files, not DB** — Simple, grep-able, human-editable
-- **Stdio MCP, not HTTP** — No port allocation, works in sandboxed agent contexts
-- **os/exec, not PTY** — `-p` / `exec` are pipe-friendly, no PTY overhead
-- **No ACP** — ACP heredoc stdin EOF kills the protocol; `-p` / `exec` are reliable
-- **Shell env from login shell** — Ensures nvm/fnm/GOPATH/etc are available
+Set `XORKESTRA_HOME` to use a different state directory:
+
+```bash
+XORKESTRA_HOME=/tmp/orkestra orkestra init
+```
+
+## Design Notes
+
+- Single Go binary for Linux and macOS
+- JSON state files for simple inspection and recovery
+- Atomic, locked writes for workspace, session, and todo state
+- Stdio MCP transport so agents do not need a port
+- Pipe-friendly agent invocation through Claude Code `-p` and Codex `exec`
+- Login-shell environment capture so user-installed tools are available to agents
+- Per-process GitHub token injection instead of global auth switching
 
 ## License
 

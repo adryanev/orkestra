@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/adryanev/orkestra/pkg/mcp"
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
@@ -19,7 +18,6 @@ var (
 	jsonOutput  bool
 	wm          *workspace.Manager
 	agentRunner *runner.Runner
-	mcpServer   *mcp.Server
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -39,7 +37,6 @@ running agents, and interacting with them via the MCP protocol.`,
 		}
 
 		agentRunner = runner.NewRunner(wm)
-		mcpServer = mcp.NewServer(wm)
 
 		return nil
 	},
