@@ -66,6 +66,9 @@ type UsageReport struct {
 
 type Runner struct {
 	workspaceManager *workspace.Manager
+	// binOverride, when set, replaces agent-binary resolution. It is a test
+	// seam so a fake agent script can be driven through the full run path.
+	binOverride string
 	sync.Mutex
 }
 
@@ -273,7 +276,10 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	// Resolve the agent binary against the captured shell PATH. exec.Command
 	// resolves bare names against orkestra's own PATH, not cmd.Env, so an
 	// nvm/fnm/asdf-installed agent would otherwise be "not found".
-	binPath := resolveBinary(agent, shellEnv)
+	binPath := r.binOverride
+	if binPath == "" {
+		binPath = resolveBinary(agent, shellEnv)
+	}
 
 	// The long-lived agent process is governed by `stop`/cancellation rather
 	// than a fixed deadline, so it uses exec.Command (no context timeout).
