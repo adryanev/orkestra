@@ -85,13 +85,9 @@ func (m *Manager) load() error {
 		}
 		// If file doesn't exist, start with empty map
 	} else {
-		var workspaces []Workspace
-		if err := json.Unmarshal(data, &workspaces);
+		if err := json.Unmarshal(data, &m.workspaces);
 			err != nil {
 			return fmt.Errorf("failed to unmarshal workspaces: %w", err)
-		}
-		for _, ws := range workspaces {
-			m.workspaces[ws.ID] = &ws
 		}
 	}
 
@@ -104,13 +100,9 @@ func (m *Manager) load() error {
 		}
 		// If file doesn't exist, start with empty map
 	} else {
-		var sessions []Session
-		if err := json.Unmarshal(data, &sessions);
+		if err := json.Unmarshal(data, &m.sessions);
 			err != nil {
 			return fmt.Errorf("failed to unmarshal sessions: %w", err)
-		}
-		for _, s := range sessions {
-			m.sessions[s.WorkspaceID] = &s
 		}
 	}
 
