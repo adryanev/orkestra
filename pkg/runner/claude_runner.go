@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/adryanev/orkestra/pkg/env"
+	"github.com/adryanev/orkestra/pkg/gitauth"
 	"github.com/adryanev/orkestra/pkg/workspace"
 )
 
@@ -64,7 +65,19 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 		resumeThreadID = s.ThreadID
 	}
 
-	sessionInfo, err := r.executeAgent(ws.WorktreePath, agent, prompt, resumeSessionID, resumeThreadID, stream)
+	// Resolve the GitHub token for the workspace profile so it can be injected
+	// into the agent environment (works for both run and resume).
+	var token string
+	if ws.GhProfile != "" {
+		t, err := gitauth.ResolveToken(ws.GhProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to resolve gh token for profile %s: %v\n", ws.GhProfile, err)
+		} else {
+			token = t
+		}
+	}
+
+	sessionInfo, err := r.executeAgent(ws.WorktreePath, agent, prompt, resumeSessionID, resumeThreadID, token, stream)
 	if err != nil {
 		return nil, fmt.Errorf("agent execution failed for workspace %s: %w", workspaceID, err)
 	}
@@ -87,6 +100,52 @@ func (r *Runner) Stop(workspaceID string) error {
 	}
 
 	return nil
+}
+
+// resolveBinary returns the absolute path to the agent binary from the captured
+// shell environment, falling back to the bare command name.
+func resolveBinary(agent AgentType, shell *env.ShellEnv) string {
+	if shell != nil {
+		switch agent {
+		case Claude:
+			if shell.ClaudePath != "" {
+				return shell.ClaudePath
+			}
+		case Codex:
+			if shell.CodexPath != "" {
+				return shell.CodexPath
+			}
+		}
+	}
+	if agent == Codex {
+		return "codex"
+	}
+	return "claude"
+}
+
+// composeEnv builds the child environment: the orkestra process environment,
+// overlaid with captured login-shell variables, overlaid with GH_TOKEN. Keys
+// are deduplicated (last writer wins) so the child sees one value per key.
+func composeEnv(shell *env.ShellEnv, token string) []string {
+	merged := make(map[string]string)
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			merged[kv[:i]] = kv[i+1:]
+		}
+	}
+	if shell != nil {
+		for k, v := range shell.AllVars {
+			merged[k] = v
+		}
+	}
+	if token != "" {
+		merged["GH_TOKEN"] = token
+	}
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
 
 // buildAgentArgs constructs the binary name and argument vector for an agent
@@ -116,20 +175,21 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID str
 	}
 }
 
-func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID string, stream bool) (*SessionInfo, error) {
-	cmdName, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID)
+func (r *Runner) executeAgent(worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool) (*SessionInfo, error) {
+	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID)
 	if err != nil {
 		return nil, err
 	}
 
-	cmd := exec.Command(cmdName, args...)
-	cmd.Dir = worktreePath
-
-	// Inject captured shell environment
 	shellEnv := env.Captured()
-	for k, v := range shellEnv.AllVars {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	// Resolve the agent binary against the captured shell PATH. exec.Command
+	// resolves bare names against orkestra's own PATH, not cmd.Env, so an
+	// nvm/fnm/asdf-installed agent would otherwise be "not found".
+	binPath := resolveBinary(agent, shellEnv)
+
+	cmd := exec.Command(binPath, args...)
+	cmd.Dir = worktreePath
+	cmd.Env = composeEnv(shellEnv, token)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

@@ -2,8 +2,71 @@ package runner
 
 import (
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/adryanev/orkestra/pkg/env"
 )
+
+func envValue(vars []string, key string) (string, bool) {
+	for _, kv := range vars {
+		if i := strings.IndexByte(kv, '='); i > 0 && kv[:i] == key {
+			return kv[i+1:], true
+		}
+	}
+	return "", false
+}
+
+func TestComposeEnvOverlaysAndDedups(t *testing.T) {
+	shell := &env.ShellEnv{AllVars: map[string]string{
+		"PATH":       "/shell/bin",
+		"SHELL_ONLY": "yes",
+	}}
+	vars := composeEnv(shell, "tok-9")
+
+	// Token injected.
+	if v, ok := envValue(vars, "GH_TOKEN"); !ok || v != "tok-9" {
+		t.Errorf("GH_TOKEN = %q,%v want tok-9", v, ok)
+	}
+	// Shell var present.
+	if v, _ := envValue(vars, "SHELL_ONLY"); v != "yes" {
+		t.Errorf("SHELL_ONLY = %q, want yes", v)
+	}
+	// PATH from shell overrides the process PATH; only one PATH entry exists.
+	count := 0
+	for _, kv := range vars {
+		if strings.HasPrefix(kv, "PATH=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one PATH entry, got %d", count)
+	}
+	if v, _ := envValue(vars, "PATH"); v != "/shell/bin" {
+		t.Errorf("PATH = %q, want /shell/bin (shell overrides process)", v)
+	}
+}
+
+func TestComposeEnvNoToken(t *testing.T) {
+	vars := composeEnv(&env.ShellEnv{AllVars: map[string]string{}}, "")
+	if _, ok := envValue(vars, "GH_TOKEN"); ok {
+		t.Error("GH_TOKEN should be absent when no token provided")
+	}
+}
+
+func TestResolveBinary(t *testing.T) {
+	shell := &env.ShellEnv{ClaudePath: "/abs/claude", CodexPath: "/abs/codex"}
+	if got := resolveBinary(Claude, shell); got != "/abs/claude" {
+		t.Errorf("claude = %q, want /abs/claude", got)
+	}
+	if got := resolveBinary(Codex, shell); got != "/abs/codex" {
+		t.Errorf("codex = %q, want /abs/codex", got)
+	}
+	// Fallback to bare name when not resolved.
+	if got := resolveBinary(Claude, &env.ShellEnv{}); got != "claude" {
+		t.Errorf("fallback = %q, want claude", got)
+	}
+}
 
 func TestBuildAgentArgsClaudeFresh(t *testing.T) {
 	name, args, err := buildAgentArgs(Claude, "do it", "", "")

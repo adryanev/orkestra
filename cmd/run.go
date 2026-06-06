@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/adryanev/orkestra/pkg/gitauth"
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
@@ -34,16 +33,8 @@ var runCmd = &cobra.Command{
 			prompt = args[0]
 		}
 
-		// Resolve git auth if profile is set
-		ws, err := wm.GetWorkspace(runWorkspace)
-		if err == nil && ws.GhProfile != "" {
-			token, err := gitauth.ResolveToken(ws.GhProfile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to get token for profile %s: %v\n", ws.GhProfile, err)
-			} else if token != "" {
-				os.Setenv("GH_TOKEN", token)
-			}
-		}
+		// Git-auth token resolution and injection happens inside the runner,
+		// so it applies to both run and resume.
 
 		agent := runner.Claude
 		if runAgent == "codex" {
