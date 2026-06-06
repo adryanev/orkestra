@@ -65,6 +65,7 @@ func init() {
 	rootCmd.AddCommand(resumeCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(todoCmd)
 }
 
 func initConfig() {
