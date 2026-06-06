@@ -1,12 +1,30 @@
 package cmd
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+var stopWorkspace string
 
 var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop a running agent process",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Implementation for stop command
-		cmd.Println("Stopping agent...")
+		if stopWorkspace == "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --workspace is required")
+			os.Exit(1)
+		}
+		if err := agentRunner.Stop(stopWorkspace); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Workspace %s stopped\n", stopWorkspace)
 	},
+}
+
+func init() {
+	stopCmd.Flags().StringVar(&stopWorkspace, "workspace", "", "Workspace ID")
 }

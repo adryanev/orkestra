@@ -1,12 +1,17 @@
 package cmd
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+)
 
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
-	Short: "MCP server commands",
+	Short: "Start MCP server (stdio)",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Implementation for mcp command
-		cmd.Println("MCP server commands...")
+		fmt.Fprintln(os.Stderr, "MCP server started, waiting for JSON-RPC on stdin...")
+		mcpServer.Listen()
 	},
 }
