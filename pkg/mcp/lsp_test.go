@@ -5,8 +5,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/adryanev/orkestra/pkg/env"
 )
 
 type nopWriteCloser struct{ io.Writer }
@@ -223,5 +228,47 @@ func TestResolveFilePathRejectsTraversal(t *testing.T) {
 	}
 	if _, err := pool.resolveFilePath("sub/file.go"); err != nil {
 		t.Errorf("a path inside the workspace should resolve, got %v", err)
+	}
+}
+
+// TestGoplsHoverIntegration exercises the full transport against a live gopls:
+// framing, the initialize/initialized handshake, server-initiated requests,
+// didOpen, and a real hover response. It is skipped when gopls is not on the
+// captured PATH, so the suite stays green on minimal machines.
+func TestGoplsHoverIntegration(t *testing.T) {
+	if env.LookPath("gopls") == "" {
+		t.Skip("gopls not installed; skipping LSP integration test")
+	}
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module example.com/m\n\ngo 1.21\n")
+	src := "package main\n\nfunc Greet() string {\n\treturn \"hi\"\n}\n\nfunc main() {\n\t_ = Greet()\n}\n"
+	mustWrite(t, filepath.Join(root, "main.go"), src)
+
+	pool := NewLspPool(root, nil)
+	defer pool.Shutdown()
+
+	// "func Greet" is on line 3; the G of Greet is column 6 (1-based). gopls
+	// can index lazily, so retry a few times before failing.
+	var out string
+	var err error
+	for i := 0; i < 5; i++ {
+		out, err = pool.Hover("main.go", 3, 6)
+		if err == nil && strings.Contains(out, "Greet") {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
+		t.Fatalf("Hover: %v", err)
+	}
+	if !strings.Contains(out, "Greet") {
+		t.Errorf("hover did not mention the symbol: %q", out)
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
