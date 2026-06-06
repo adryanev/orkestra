@@ -110,10 +110,16 @@ func (m *Manager) load() error {
 }
 
 // Save persists the current state of workspaces and sessions to disk.
-func (m *Manager) Save() error { 
+func (m *Manager) Save() error {
 	m.Lock()
 	defer m.Unlock()
+	return m.saveLocked()
+}
 
+// saveLocked persists state assuming the caller already holds m's lock. Mutating
+// methods that hold the lock must call this instead of Save to avoid a
+// self-deadlock on the non-reentrant mutex.
+func (m *Manager) saveLocked() error {
 	// Save workspaces
 	workspacesPath := filepath.Join(m.configDir, WorkspacesFile)
 	workspacesData, err := json.MarshalIndent(m.workspaces, "", "  ")
@@ -143,21 +149,38 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 	m.Lock()
 	defer m.Unlock()
 
-	id := uuid.New().String()
-
-	// Detect default branch
-	defaultBranch := "origin/main"
-	out, err := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD").Output()
-	if err == nil {
-		defaultBranch = strings.TrimSpace(string(out))
+	if repoPath == "" {
+		return nil, fmt.Errorf("repo path is required")
+	}
+	if !isGitRepo(repoPath) {
+		return nil, fmt.Errorf("%q is not a git repository", repoPath)
 	}
 
-	// Create worktree
-	worktreePath := m.configDir + "/worktrees/" + id
-	os.MkdirAll(m.configDir+"/worktrees", 0755)
+	id := uuid.New().String()
 
-	if err := exec.Command("git", "worktree", "add", "-b", branch, worktreePath, defaultBranch).Run(); err != nil {
-		return nil, fmt.Errorf("failed to create worktree: %w", err)
+	// Detect the default branch of the target repository (origin/HEAD ->
+	// origin/main -> origin/master). All git commands run inside repoPath.
+	defaultBranch, err := detectDefaultBranch(repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate a valid branch name when none was supplied; an empty value
+	// would make `git worktree add -b ""` fail.
+	if branch == "" {
+		branch = defaultWorkspaceBranch(name, id)
+	}
+
+	// Create worktree from origin/<defaultBranch>.
+	worktreePath := filepath.Join(m.configDir, "worktrees", id)
+	if err := os.MkdirAll(filepath.Join(m.configDir, "worktrees"), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create worktrees directory: %w", err)
+	}
+
+	addCmd := exec.Command("git", "worktree", "add", "-b", branch, worktreePath, "origin/"+defaultBranch)
+	addCmd.Dir = repoPath
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to create worktree: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	ws := &Workspace{
@@ -172,7 +195,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 
 	m.workspaces[id] = ws
 
-	if err := m.Save(); err != nil {
+	if err := m.saveLocked(); err != nil {
 		return nil, fmt.Errorf("failed to save workspace: %w", err)
 	}
 
@@ -211,7 +234,7 @@ func (m *Manager) UpdateWorkspaceStatus(id, status string) error {
 	}
 	ws.Status = status
 
-	if err := m.Save(); err != nil {
+	if err := m.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save workspace status: %w", err)
 	}
 	return nil
@@ -223,7 +246,7 @@ func (m *Manager) AddSession(session Session) error {
 
 	m.sessions[session.WorkspaceID] = &session
 
-	if err := m.Save(); err != nil {
+	if err := m.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
 	}
 	return nil
@@ -240,6 +263,70 @@ func (m *Manager) GetSession(workspaceID string) (*Session, error) {
 	return s, nil
 }
 
+// isGitRepo reports whether path is inside a git working tree.
+func isGitRepo(path string) bool {
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = path
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// detectDefaultBranch resolves the default branch name of the repo at repoPath,
+// trying origin/HEAD, then origin/main, then origin/master. It returns the bare
+// branch name (e.g. "main"), not a ref.
+func detectDefaultBranch(repoPath string) (string, error) {
+	// Tier 1: the origin/HEAD symref, the authoritative default.
+	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	cmd.Dir = repoPath
+	if out, err := cmd.Output(); err == nil {
+		ref := strings.TrimSpace(string(out))
+		if name := strings.TrimPrefix(ref, "refs/remotes/origin/"); name != ref && name != "" {
+			return name, nil
+		}
+	}
+
+	// Tier 2: probe common defaults.
+	for _, name := range []string{"main", "master"} {
+		probe := exec.Command("git", "rev-parse", "--verify", "--quiet", "origin/"+name)
+		probe.Dir = repoPath
+		if probe.Run() == nil {
+			return name, nil
+		}
+	}
+
+	return "", fmt.Errorf("could not detect default branch for %q (no origin/HEAD, origin/main, or origin/master)", repoPath)
+}
+
+// defaultWorkspaceBranch builds a valid branch name from the workspace name,
+// falling back to a short id-based name when no name is available.
+func defaultWorkspaceBranch(name, id string) string {
+	slug := slugify(name)
+	if slug == "" {
+		return "orkestra/" + id[:8]
+	}
+	return "orkestra/" + slug
+}
+
+// slugify reduces s to a git-branch-safe slug: lowercase alphanumerics and
+// single hyphens, no leading/trailing hyphen.
+func slugify(s string) string {
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevHyphen = false
+		default:
+			if !prevHyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				prevHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
 func (m *Manager) RemoveSession(workspaceID string) error {
 	m.Lock()
 	defer m.Unlock()
@@ -250,7 +337,7 @@ func (m *Manager) RemoveSession(workspaceID string) error {
 	}
 	delete(m.sessions, workspaceID)
 
-	if err := m.Save(); err != nil {
+	if err := m.saveLocked(); err != nil {
 		return fmt.Errorf("failed to save sessions after removal: %w", err)
 	}
 	return nil

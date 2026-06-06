@@ -1,1 +1,5 @@
 orkestra
+
+# Track Go source under pkg/ (override global ~/.gitignore_global /pkg/)
+!/pkg/
+!/pkg/**
