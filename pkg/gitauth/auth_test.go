@@ -1,16 +1,17 @@
 package gitauth
 
 import (
+	"context"
 	"os/exec"
 	"slices"
 	"testing"
 )
 
 func TestResolveTokenSuccess(t *testing.T) {
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		return exec.Command("printf", "tok-123")
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "printf", "tok-123")
 	}
-	defer func() { execCommand = exec.Command }()
+	defer func() { execCommandContext = exec.CommandContext }()
 
 	got, err := ResolveToken("my-profile")
 	if err != nil {
@@ -22,13 +23,24 @@ func TestResolveTokenSuccess(t *testing.T) {
 }
 
 func TestResolveTokenError(t *testing.T) {
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		return exec.Command("false")
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "false")
 	}
-	defer func() { execCommand = exec.Command }()
+	defer func() { execCommandContext = exec.CommandContext }()
 
 	if _, err := ResolveToken("missing"); err == nil {
 		t.Error("expected error when gh exits non-zero")
+	}
+}
+
+func TestResolveTokenContextCanceled(t *testing.T) {
+	execCommandContext = exec.CommandContext
+	defer func() { execCommandContext = exec.CommandContext }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled: the command must not run
+	if _, err := ResolveTokenContext(ctx, "any"); err == nil {
+		t.Error("expected error when context is already canceled")
 	}
 }
 

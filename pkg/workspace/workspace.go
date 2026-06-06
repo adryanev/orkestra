@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,9 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/adryanev/orkestra/pkg/state"
 	"github.com/google/uuid"
+)
+
+// Git operation deadlines. Detection probes are fast; a worktree add checks out
+// files and is given more headroom. No git call may block indefinitely (R11).
+const (
+	gitDetectTimeout   = 15 * time.Second
+	gitWorktreeTimeout = 2 * time.Minute
 )
 
 const (
@@ -20,13 +29,13 @@ const (
 )
 
 type Workspace struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	RepoPath    string `json:"repo_path"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	RepoPath     string `json:"repo_path"`
 	WorktreePath string `json:"worktree_path"`
-	Branch      string `json:"branch"`
-	Status      string `json:"status"` // e.g., "active", "inactive", "error"
-	GhProfile   string `json:"gh_profile,omitempty"`
+	Branch       string `json:"branch"`
+	Status       string `json:"status"` // e.g., "active", "inactive", "error"
+	GhProfile    string `json:"gh_profile,omitempty"`
 }
 
 type Session struct {
@@ -59,14 +68,13 @@ func NewManager(configDir string) (*Manager, error) {
 
 	_, err := os.Stat(configDir)
 	if os.IsNotExist(err) {
-		if err := os.MkdirAll(configDir, 0755);
-			err != nil {
+		if err := os.MkdirAll(configDir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create config directory %s: %w", configDir, err)
 		}
 	}
-		
+
 	manager := &Manager{
-		configDir: configDir,
+		configDir:  configDir,
 		workspaces: make(map[string]*Workspace),
 		sessions:   make(map[string]*Session),
 	}
@@ -208,20 +216,22 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 		return nil, fmt.Errorf("failed to create worktrees directory: %w", err)
 	}
 
-	addCmd := exec.Command("git", "worktree", "add", "-b", branch, worktreePath, "origin/"+defaultBranch)
+	ctx, cancel := context.WithTimeout(context.Background(), gitWorktreeTimeout)
+	defer cancel()
+	addCmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branch, worktreePath, "origin/"+defaultBranch)
 	addCmd.Dir = repoPath
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	ws := &Workspace{
-		ID:          id,
-		Name:        name,
-		RepoPath:    repoPath,
+		ID:           id,
+		Name:         name,
+		RepoPath:     repoPath,
 		WorktreePath: worktreePath,
-		Branch:      branch,
-		Status:      "active",
-		GhProfile:   ghProfile,
+		Branch:       branch,
+		Status:       "active",
+		GhProfile:    ghProfile,
 	}
 
 	if err := m.mutate(func() error {
@@ -323,7 +333,9 @@ func (m *Manager) GetSession(workspaceID string) (*Session, error) {
 
 // isGitRepo reports whether path is inside a git working tree.
 func isGitRepo(path string) bool {
-	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	ctx, cancel := context.WithTimeout(context.Background(), gitDetectTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--is-inside-work-tree")
 	cmd.Dir = path
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
@@ -331,10 +343,13 @@ func isGitRepo(path string) bool {
 
 // detectDefaultBranch resolves the default branch name of the repo at repoPath,
 // trying origin/HEAD, then origin/main, then origin/master. It returns the bare
-// branch name (e.g. "main"), not a ref.
+// branch name (e.g. "main"), not a ref. Each git call runs under a deadline.
 func detectDefaultBranch(repoPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitDetectTimeout)
+	defer cancel()
+
 	// Tier 1: the origin/HEAD symref, the authoritative default.
-	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
 	cmd.Dir = repoPath
 	if out, err := cmd.Output(); err == nil {
 		ref := strings.TrimSpace(string(out))
@@ -345,7 +360,7 @@ func detectDefaultBranch(repoPath string) (string, error) {
 
 	// Tier 2: probe common defaults.
 	for _, name := range []string{"main", "master"} {
-		probe := exec.Command("git", "rev-parse", "--verify", "--quiet", "origin/"+name)
+		probe := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "origin/"+name)
 		probe.Dir = repoPath
 		if probe.Run() == nil {
 			return name, nil
