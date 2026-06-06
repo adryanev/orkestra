@@ -124,6 +124,76 @@ func TestCreateWorkspaceRejectsNonRepo(t *testing.T) {
 	}
 }
 
+func TestRemoveWorkspace(t *testing.T) {
+	repo := setupRepoWithOrigin(t, "main")
+	cfg := t.TempDir()
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := m.CreateWorkspace("Cleanup", repo, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AddSession(Session{WorkspaceID: ws.ID, Agent: "claude", SessionID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveWorkspace(ws.ID, false); err != nil {
+		t.Fatalf("RemoveWorkspace: %v", err)
+	}
+	if _, err := os.Stat(ws.WorktreePath); !os.IsNotExist(err) {
+		t.Errorf("worktree directory should be gone, stat err = %v", err)
+	}
+	if _, err := m.GetWorkspace(ws.ID); err == nil {
+		t.Error("workspace should be deregistered")
+	}
+	if _, err := m.GetSession(ws.ID); err == nil {
+		t.Error("session should be removed with the workspace")
+	}
+}
+
+func TestRemoveWorkspaceUnknownID(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RemoveWorkspace("does-not-exist", false); err == nil {
+		t.Error("expected error removing an unknown workspace")
+	}
+}
+
+func TestRemoveWorkspaceDirtyRequiresForce(t *testing.T) {
+	repo := setupRepoWithOrigin(t, "main")
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := m.CreateWorkspace("Dirty", repo, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Introduce an uncommitted change so git refuses a non-forced removal.
+	if err := os.WriteFile(filepath.Join(ws.WorktreePath, "dirty.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveWorkspace(ws.ID, false); err == nil {
+		t.Error("expected dirty worktree removal to be refused without force")
+	}
+	// The workspace must still be registered after the refused removal.
+	if _, err := m.GetWorkspace(ws.ID); err != nil {
+		t.Errorf("workspace should survive a refused removal: %v", err)
+	}
+
+	if err := m.RemoveWorkspace(ws.ID, true); err != nil {
+		t.Fatalf("forced removal should succeed: %v", err)
+	}
+	if _, err := m.GetWorkspace(ws.ID); err == nil {
+		t.Error("workspace should be gone after forced removal")
+	}
+}
+
 // TestSessionProcessLifecycle verifies that the PID/PGID written at spawn
 // survive a reload, that a session-id update preserves them, and that clearing
 // zeroes them while keeping the id — the cross-process tracking contract for

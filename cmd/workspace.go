@@ -8,10 +8,12 @@ import (
 )
 
 var (
-	workspaceRepo      string
-	workspaceName      string
-	workspaceBranch    string
-	workspaceGhProfile string
+	workspaceRepo        string
+	workspaceName        string
+	workspaceBranch      string
+	workspaceGhProfile   string
+	workspaceRemoveID    string
+	workspaceRemoveForce bool
 )
 
 var workspaceCmd = &cobra.Command{
@@ -68,12 +70,45 @@ var workspaceListCmd = &cobra.Command{
 	},
 }
 
+var workspaceRemoveCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove a workspace and its worktree",
+	Run: func(cmd *cobra.Command, args []string) {
+		if workspaceRemoveID == "" {
+			emitError(fmt.Errorf("--id is required"))
+		}
+
+		// Guard against tearing down a workspace with a live agent. With
+		// --force, stop the agent first; otherwise refuse.
+		if agentRunner.IsRunning(workspaceRemoveID) {
+			if !workspaceRemoveForce {
+				emitError(fmt.Errorf("workspace %s has a running agent; pass --force to stop and remove it", workspaceRemoveID))
+			}
+			if err := agentRunner.Stop(workspaceRemoveID); err != nil {
+				emitError(fmt.Errorf("failed to stop running agent: %w", err))
+			}
+		}
+
+		if err := wm.RemoveWorkspace(workspaceRemoveID, workspaceRemoveForce); err != nil {
+			emitError(err)
+		}
+		emitResult(
+			fmt.Sprintf("Workspace %s removed", workspaceRemoveID),
+			map[string]string{"workspace_id": workspaceRemoveID, "status": "removed"},
+		)
+	},
+}
+
 func init() {
 	workspaceCreateCmd.Flags().StringVar(&workspaceRepo, "repo", "", "Repository path")
 	workspaceCreateCmd.Flags().StringVar(&workspaceName, "name", "", "Workspace name")
 	workspaceCreateCmd.Flags().StringVar(&workspaceBranch, "branch", "", "Branch name (optional)")
 	workspaceCreateCmd.Flags().StringVar(&workspaceGhProfile, "gh-profile", "", "GitHub auth profile")
 
+	workspaceRemoveCmd.Flags().StringVar(&workspaceRemoveID, "id", "", "Workspace ID")
+	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "Force removal of a dirty worktree or a workspace with a running agent")
+
 	workspaceCmd.AddCommand(workspaceCreateCmd)
 	workspaceCmd.AddCommand(workspaceListCmd)
+	workspaceCmd.AddCommand(workspaceRemoveCmd)
 }

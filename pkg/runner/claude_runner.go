@@ -97,6 +97,16 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 	return sessionInfo, nil
 }
 
+// IsRunning reports whether the workspace has a live agent process, based on
+// the persisted PID. A stale or absent record reads as not running.
+func (r *Runner) IsRunning(workspaceID string) bool {
+	s, err := r.workspaceManager.GetSession(workspaceID)
+	if err != nil {
+		return false
+	}
+	return s.PID > 0 && process.Alive(s.PID)
+}
+
 // Stop terminates the agent process group recorded for a workspace. It reads
 // the persisted PID/PGID (written by a separate `run` process), signals the
 // group, then clears the process record and marks the workspace inactive. A

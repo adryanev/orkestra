@@ -400,6 +400,41 @@ func slugify(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// RemoveWorkspace removes the git worktree for a workspace and then
+// deregisters the workspace and its session. git worktree remove refuses a
+// dirty worktree unless force is set, which is the safety we want; pass force
+// to discard uncommitted changes. The caller is responsible for terminating
+// any running agent before calling this.
+func (m *Manager) RemoveWorkspace(id string, force bool) error {
+	m.Lock()
+	ws, ok := m.workspaces[id]
+	if !ok {
+		m.Unlock()
+		return fmt.Errorf("workspace with id %s not found", id)
+	}
+	repoPath := ws.RepoPath
+	worktreePath := ws.WorktreePath
+	m.Unlock()
+
+	args := []string{"worktree", "remove", worktreePath}
+	if force {
+		args = []string{"worktree", "remove", "--force", worktreePath}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitDetectTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to remove worktree for %s: %w: %s", id, err, strings.TrimSpace(string(out)))
+	}
+
+	return m.mutate(func() error {
+		delete(m.workspaces, id)
+		delete(m.sessions, id)
+		return nil
+	})
+}
+
 func (m *Manager) RemoveSession(workspaceID string) error {
 	return m.mutate(func() error {
 		if _, ok := m.sessions[workspaceID]; !ok {
