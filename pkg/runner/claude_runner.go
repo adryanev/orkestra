@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/adryanev/orkestra/pkg/workspace"
+	"github.com/adryanev/orkestra/pkg/env"
 )
 
 // AgentType defines the type of agent being run.
@@ -133,6 +134,12 @@ func (r *Runner) executeAgent(worktreePath string, agent AgentType, args []strin
 
 	cmd := exec.Command(cmdName, args...)
 	cmd.Dir = worktreePath
+
+	// Inject captured shell environment
+	shellEnv := env.Captured()
+	for k, v := range shellEnv.AllVars {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

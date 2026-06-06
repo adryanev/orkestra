@@ -65,6 +65,31 @@ func (s *Server) Listen() {
 			result, errResp = s.renameBranch(args)
 		case "notify":
 			result, errResp = s.notify(args)
+		// LSP Tools Registration
+		case "lsp_goto_definition":
+			filePath, _ := args["file_path"].(string)
+			line, _ := args["line"].(float64)
+			character, _ := args["character"].(float64)
+			result, errResp = lsp_goto_definition(filePath, int(line), int(character))
+		case "lsp_hover":
+			filePath, _ := args["file_path"].(string)
+			line, _ := args["line"].(float64)
+			character, _ := args["character"].(float64)
+			result, errResp = lsp_hover(filePath, int(line), int(character))
+		case "lsp_references":
+			filePath, _ := args["file_path"].(string)
+			line, _ := args["line"].(float64)
+			character, _ := args["character"].(float64)
+			result, errResp = lsp_references(filePath, int(line), int(character))
+		case "lsp_diagnostics":
+			filePath, _ := args["file_path"].(string)
+			result, errResp = lsp_diagnostics(filePath)
+		case "lsp_rename":
+			filePath, _ := args["file_path"].(string)
+			line, _ := args["line"].(float64)
+			character, _ := args["character"].(float64)
+			newName, _ := args["new_name"].(string)
+			result, errResp = lsp_rename(filePath, int(line), int(character), newName)
 		default:
 			errResp = fmt.Errorf("unknown tool: %s", toolName)
 		}
