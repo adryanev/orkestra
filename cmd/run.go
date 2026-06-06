@@ -48,9 +48,20 @@ var runCmd = &cobra.Command{
 			if sessionInfo.ThreadID != "" {
 				fmt.Printf("Thread: %s\n", sessionInfo.ThreadID)
 			}
+			// Save session info for persistence
+			newSession := workspace.Session{
+				WorkspaceID: runWorkspace,
+				Agent:       runAgent, // Assuming runAgent is properly mapped to an agent type
+				SessionID:   sessionInfo.SessionID,
+				ThreadID:    sessionInfo.ThreadID,
+			}
+			if err := workspaceManager.AddSession(newSession); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to save session info: %v\n", err)
+			}
 		}
 	},
-}
+};
+
 
 func init() {
 	runCmd.Flags().StringVar(&runWorkspace, "workspace", "", "Workspace ID")

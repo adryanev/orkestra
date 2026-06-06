@@ -18,24 +18,21 @@ var resumeCmd = &cobra.Command{
 	Use:   "resume",
 	Short: "Resume a previous agent session",
 	Run: func(cmd *cobra.Command, args []string) {
-		if resumeWorkspace == "" {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: --workspace is required")
+		// Retrieve session info for resuming
+		session, err := workspaceManager.GetSession(resumeWorkspace)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: could not get session info for workspace %s: %v\n", resumeWorkspace, err)
 			os.Exit(1)
 		}
-		if resumePrompt == "" && len(args) == 0 {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Error: prompt required")
+
+		// Ensure the agent type matches
+		if session.Agent != resumeAgent {
+			fmt.Fprintf(os.Stderr, "Error: agent type mismatch. Workspace %s uses %s, but requested %s\n", resumeWorkspace, session.Agent, resumeAgent)
 			os.Exit(1)
 		}
-		prompt := resumePrompt
-		if prompt == "" {
-			prompt = args[0]
-		}
 
-		agent := runner.Claude
-		if resumeAgent == "codex" {
-			agent = runner.Codex
-		}
-
+		// TODO: Pass saved SessionID and ThreadID to agentRunner.Run if the runner supports it
+		// For now, we re-initialize the session by calling Run with the prompt.
 		sessionInfo, err := agentRunner.Run(resumeWorkspace, agent, prompt, true)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -45,7 +42,7 @@ var resumeCmd = &cobra.Command{
 			fmt.Printf("Resumed session: %s\n", sessionInfo.SessionID)
 		}
 	},
-}
+};
 
 func init() {
 	resumeCmd.Flags().StringVar(&resumeWorkspace, "workspace", "", "Workspace ID")
