@@ -185,14 +185,20 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch string) (*Workspace, er
 	}
 
 
-	id := uuid.New().String()
+	worktreePath := filepath.Join(m.configDir, "worktrees", id)
+	cmd = exec.Command("git", "worktree", "add", "-b", branch, worktreePath, defaultBranch)
+	cmd.Dir = repoPath
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to create worktree: %w", err)
+	}
+
 	workspace := &Workspace{
 		ID:          id,
 		Name:        name,
 		RepoPath:    repoPath,
-		WorktreePath: fmt.Sprintf("%s/worktrees/%s", m.configDir, id), // Placeholder
+		WorktreePath: worktreePath, // Correctly set WorktreePath
 		Branch:      branch,
-		Status:      "inactive",
+		Status:      "active",
 	}
 
 	m.workspaces[id] = workspace
