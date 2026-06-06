@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/adryanev/orkestra/pkg/state"
 	"github.com/google/uuid"
 )
 
@@ -75,38 +76,68 @@ func NewManager(configDir string) (*Manager, error) {
 func (m *Manager) load() error {
 	m.Lock()
 	defer m.Unlock()
+	return m.readState()
+}
 
-	// Load workspaces
+// lockPath is the single advisory lock file guarding all state writes.
+func (m *Manager) lockPath() string {
+	return filepath.Join(m.configDir, ".state.lock")
+}
+
+// readState replaces the in-memory maps with the current on-disk state. The
+// caller must hold m's mutex. Atomic writes (rename) mean a read always sees a
+// complete file, so no file lock is required to read.
+func (m *Manager) readState() error {
+	m.workspaces = make(map[string]*Workspace)
+	m.sessions = make(map[string]*Session)
+
 	workspacesPath := filepath.Join(m.configDir, WorkspacesFile)
-	data, err := os.ReadFile(workspacesPath)
+	data, err := state.ReadFile(workspacesPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read workspaces file %s: %w", workspacesPath, err)
-		}
-		// If file doesn't exist, start with empty map
-	} else {
-		if err := json.Unmarshal(data, &m.workspaces);
-			err != nil {
+		return fmt.Errorf("failed to read workspaces file %s: %w", workspacesPath, err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &m.workspaces); err != nil {
 			return fmt.Errorf("failed to unmarshal workspaces: %w", err)
 		}
 	}
 
-	// Load sessions
 	sessionsPath := filepath.Join(m.configDir, SessionsFile)
-	data, err = os.ReadFile(sessionsPath)
+	data, err = state.ReadFile(sessionsPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read sessions file %s: %w", sessionsPath, err)
-		}
-		// If file doesn't exist, start with empty map
-	} else {
-		if err := json.Unmarshal(data, &m.sessions);
-			err != nil {
+		return fmt.Errorf("failed to read sessions file %s: %w", sessionsPath, err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &m.sessions); err != nil {
 			return fmt.Errorf("failed to unmarshal sessions: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// mutate runs apply against the in-memory maps under both the in-process mutex
+// and a cross-process advisory file lock, after reloading the latest on-disk
+// state, then writes the result atomically. This makes the full read-modify-write
+// cycle safe against concurrent orkestra processes: a parallel writer's keys are
+// reloaded before apply runs, so they are never clobbered.
+func (m *Manager) mutate(apply func() error) error {
+	m.Lock()
+	defer m.Unlock()
+
+	lock, err := state.Acquire(m.lockPath())
+	if err != nil {
+		return fmt.Errorf("failed to acquire state lock: %w", err)
+	}
+	defer lock.Release()
+
+	if err := m.readState(); err != nil {
+		return err
+	}
+	if err := apply(); err != nil {
+		return err
+	}
+	return m.saveLocked()
 }
 
 // Save persists the current state of workspaces and sessions to disk.
@@ -126,8 +157,7 @@ func (m *Manager) saveLocked() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal workspaces: %w", err)
 	}
-	if err := os.WriteFile(workspacesPath, workspacesData, 0644);
-		err != nil {
+	if err := state.WriteAtomic(workspacesPath, workspacesData, 0644); err != nil {
 		return fmt.Errorf("failed to write workspaces file %s: %w", workspacesPath, err)
 	}
 
@@ -137,8 +167,7 @@ func (m *Manager) saveLocked() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal sessions: %w", err)
 	}
-	if err := os.WriteFile(sessionsPath, sessionsData, 0644);
-		err != nil {
+	if err := state.WriteAtomic(sessionsPath, sessionsData, 0644); err != nil {
 		return fmt.Errorf("failed to write sessions file %s: %w", sessionsPath, err)
 	}
 
@@ -146,9 +175,6 @@ func (m *Manager) saveLocked() error {
 }
 
 func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Workspace, error) {
-	m.Lock()
-	defer m.Unlock()
-
 	if repoPath == "" {
 		return nil, fmt.Errorf("repo path is required")
 	}
@@ -193,9 +219,10 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 		GhProfile:   ghProfile,
 	}
 
-	m.workspaces[id] = ws
-
-	if err := m.saveLocked(); err != nil {
+	if err := m.mutate(func() error {
+		m.workspaces[id] = ws
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("failed to save workspace: %w", err)
 	}
 
@@ -225,31 +252,22 @@ func (m *Manager) GetWorkspace(id string) (*Workspace, error) {
 }
 
 func (m *Manager) UpdateWorkspaceStatus(id, status string) error {
-	m.Lock()
-	defer m.Unlock()
-
-	ws, ok := m.workspaces[id]
-	if !ok {
-		return fmt.Errorf("workspace with id %s not found", id)
-	}
-	ws.Status = status
-
-	if err := m.saveLocked(); err != nil {
-		return fmt.Errorf("failed to save workspace status: %w", err)
-	}
-	return nil
+	return m.mutate(func() error {
+		ws, ok := m.workspaces[id]
+		if !ok {
+			return fmt.Errorf("workspace with id %s not found", id)
+		}
+		ws.Status = status
+		return nil
+	})
 }
 
 func (m *Manager) AddSession(session Session) error {
-	m.Lock()
-	defer m.Unlock()
-
-	m.sessions[session.WorkspaceID] = &session
-
-	if err := m.saveLocked(); err != nil {
-		return fmt.Errorf("failed to save session: %w", err)
-	}
-	return nil
+	return m.mutate(func() error {
+		s := session
+		m.sessions[s.WorkspaceID] = &s
+		return nil
+	})
 }
 
 func (m *Manager) GetSession(workspaceID string) (*Session, error) {
@@ -328,17 +346,11 @@ func slugify(s string) string {
 }
 
 func (m *Manager) RemoveSession(workspaceID string) error {
-	m.Lock()
-	defer m.Unlock()
-
-	_, ok := m.sessions[workspaceID]
-	if !ok {
-		return fmt.Errorf("session for workspace %s not found", workspaceID)
-	}
-	delete(m.sessions, workspaceID)
-
-	if err := m.saveLocked(); err != nil {
-		return fmt.Errorf("failed to save sessions after removal: %w", err)
-	}
-	return nil
+	return m.mutate(func() error {
+		if _, ok := m.sessions[workspaceID]; !ok {
+			return fmt.Errorf("session for workspace %s not found", workspaceID)
+		}
+		delete(m.sessions, workspaceID)
+		return nil
+	})
 }
