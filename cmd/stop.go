@@ -4,11 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/adryanev/orkestra/pkg/process"
-	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
 )
-
 var stopWorkspace string
 
 var stopCmd = &cobra.Command{
@@ -24,18 +21,18 @@ var stopCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		// Update workspace status to inactive
-		ws, err := workspaceManager.GetWorkspace(stopWorkspace)
+		ws, err := wm.GetWorkspace(stopWorkspace)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not get workspace status for %s: %v\n", stopWorkspace, err)
+			fmt.Fprintf(os.Stderr, "Warning: could not get workspace: %v\n", err)
 		} else {
 			ws.Status = "inactive"
-			if err := workspaceManager.Save(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to update workspace status for %s: %v\n", stopWorkspace, err)
+			if err := wm.Save(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to save workspace status: %v\n", err)
 			}
 		}
 		fmt.Printf("Workspace %s stopped\n", stopWorkspace)
 	},
- }
+}
 
 func init() {
 	stopCmd.Flags().StringVar(&stopWorkspace, "workspace", "", "Workspace ID")

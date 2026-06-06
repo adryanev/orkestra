@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sync"
 
 	"github.com/adryanev/orkestra/pkg/workspace"
@@ -134,6 +135,12 @@ func (s *Server) renameBranch(args map[string]interface{}) (interface{}, error) 
 		return nil, fmt.Errorf("missing 'new_branch' argument for rename_branch")
 	}
 
+	ws, err := s.workspaceManager.GetWorkspace(id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workspace for renaming: %w", err)
+	}
+
+	// Actually rename git branch
 	cmd := exec.Command("git", "branch", "-m", newBranch)
 	cmd.Dir = ws.WorktreePath
 	if err := cmd.Run(); err != nil {
@@ -141,36 +148,10 @@ func (s *Server) renameBranch(args map[string]interface{}) (interface{}, error) 
 	}
 
 	ws.Branch = newBranch
-	if err := s.workspaceManager.Save(); err != nil { // Changed from save() to Save()
+	if err := s.workspaceManager.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save workspace after branch rename: %w", err)
 	}
 
-	// Send notification
-	notificationDir := filepath.Join(s.workspaceManager.ConfigDir(), "notifications") // Assuming ConfigDir() exists or is accessible
-	if err := os.MkdirAll(notificationDir, 0755);
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to create notification directory %s: %v\n", notificationDir, err)
-		}
-	} else {
-		logPath := filepath.Join(notificationDir, id+".log")
-		logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to open notification log file %s: %v\n", logPath, err)
-		} else {
-			defer logFile.Close()
-			logMessage := fmt.Sprintf("Branch renamed to %s\n", newBranch)
-			if _, err := logFile.WriteString(logMessage);
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to write to notification log file %s: %v\n", logPath, err)
-				}
-			}
-		}
-	}
-
-	return map[string]string{
-		"message": fmt.Sprintf("Branch for workspace %s renamed to %s", id, newBranch),
-	}, nil
-}
 	return map[string]string{
 		"message": fmt.Sprintf("Branch for workspace %s renamed to %s", id, newBranch),
 	}, nil

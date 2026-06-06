@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -148,34 +150,24 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch string) (*Workspace, er
 	m.Lock()
 	defer m.Unlock()
 
-	// Fetch origin first
-	cmd := exec.Command("git", "fetch", "origin", branch)
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to fetch origin %s: %w", branch, err)
-	}
+	id := uuid.New().String()
 
 	// Detect default branch
-	cmd = exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
-	if err != nil {
-		// Fallback to origin/main or origin/master if symbolic-ref fails
-		output = []byte("origin/main") // Default to origin/main
-		if _, err := os.Stat(filepath.Join(repoPath, ".git/refs/remotes/origin/master")); err == nil {
-			output = []byte("origin/master")
-		}
+	defaultBranch := "origin/main"
+	out, err := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD").Output()
+	if err == nil {
+		defaultBranch = strings.TrimSpace(string(out))
 	}
-	defaultBranch := strings.TrimPrefix(string(output), "refs/remotes/")
 
 	// Create worktree
-	worktreePath := filepath.Join(m.configDir, "worktrees", id)
-	cmd = exec.Command("git", "worktree", "add", "-b", branch, worktreePath, defaultBranch)
-	cmd.Dir = repoPath
-	if err := cmd.Run(); err != nil {
+	worktreePath := m.configDir + "/worktrees/" + id
+	os.MkdirAll(m.configDir+"/worktrees", 0755)
+
+	if err := exec.Command("git", "worktree", "add", "-b", branch, worktreePath, defaultBranch).Run(); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w", err)
 	}
 
-	workspace := &Workspace{
+	ws := &Workspace{
 		ID:          id,
 		Name:        name,
 		RepoPath:    repoPath,
@@ -184,30 +176,13 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch string) (*Workspace, er
 		Status:      "active",
 	}
 
-
-	worktreePath := filepath.Join(m.configDir, "worktrees", id)
-	cmd = exec.Command("git", "worktree", "add", "-b", branch, worktreePath, defaultBranch)
-	cmd.Dir = repoPath
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to create worktree: %w", err)
-	}
-
-	workspace := &Workspace{
-		ID:          id,
-		Name:        name,
-		RepoPath:    repoPath,
-		WorktreePath: worktreePath, // Correctly set WorktreePath
-		Branch:      branch,
-		Status:      "active",
-	}
-
-	m.workspaces[id] = workspace
+	m.workspaces[id] = ws
 
 	if err := m.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save workspace: %w", err)
 	}
 
-	return workspace, nil
+	return ws, nil
 }
 
 func (m *Manager) ListWorkspaces() ([]Workspace, error) {
