@@ -109,7 +109,7 @@ func TestToolsListAdvertisesExpectedTools(t *testing.T) {
 	}
 	sort.Strings(got)
 	want := []string{
-		"get_workspace_info", "lsp_diagnostics", "lsp_find_references",
+		"ask_user", "get_workspace_info", "lsp_diagnostics", "lsp_find_references",
 		"lsp_goto_definition", "lsp_hover", "lsp_rename", "lsp_workspace_symbols",
 		"notify", "rename_branch",
 	}
@@ -243,4 +243,144 @@ func TestValidBranchNameRejectsBadNames(t *testing.T) {
 			t.Errorf("expected %q to be rejected", bad)
 		}
 	}
+}
+
+func TestAskUserToolHappyPath(t *testing.T) {
+	m, id := newTestWorkspace(t)
+	s, err := NewServer(m, id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := connect(t, s)
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ask_user",
+		Arguments: map[string]any{
+			"id":       id,
+			"question": "Should I proceed?",
+			"options":  []any{"yes", "no"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %+v", res.Content)
+	}
+
+	// Verify pending file was written
+	pending, err := ReadPending(m.ConfigDir(), id)
+	if err != nil {
+		t.Fatalf("failed to read pending file: %v", err)
+	}
+	if pending == nil {
+		t.Fatal("pending file was not written")
+	}
+	if pending.Question != "Should I proceed?" {
+		t.Errorf("question = %q, want %q", pending.Question, "Should I proceed?")
+	}
+	if len(pending.Options) != 2 {
+		t.Errorf("options length = %d, want 2", len(pending.Options))
+	}
+
+	// Cleanup
+	_ = DeletePending(m.ConfigDir(), id)
+}
+
+func TestAskUserToolRejectsDuplicate(t *testing.T) {
+	m, id := newTestWorkspace(t)
+	s, err := NewServer(m, id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := connect(t, s)
+
+	// First call succeeds
+	_, err = cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ask_user",
+		Arguments: map[string]any{
+			"id":       id,
+			"question": "First question",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second call should fail (R4 guard)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ask_user",
+		Arguments: map[string]any{
+			"id":       id,
+			"question": "Second question",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Error("expected second ask_user to fail with pending file present")
+	}
+
+	// Cleanup
+	_ = DeletePending(m.ConfigDir(), id)
+}
+
+func TestAskUserToolRejectsWrongWorkspace(t *testing.T) {
+	m, boundID, otherID := newTwoTestWorkspaces(t)
+	s, err := NewServer(m, boundID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := connect(t, s)
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ask_user",
+		Arguments: map[string]any{
+			"id":       otherID,
+			"question": "Should I proceed?",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Error("expected ask_user to reject different workspace ID")
+	}
+}
+
+func TestAskUserToolWithoutOptions(t *testing.T) {
+	m, id := newTestWorkspace(t)
+	s, err := NewServer(m, id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := connect(t, s)
+
+	// Free-form question (no options)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "ask_user",
+		Arguments: map[string]any{
+			"id":       id,
+			"question": "What is your name?",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %+v", res.Content)
+	}
+
+	// Verify pending file has no options
+	pending, err := ReadPending(m.ConfigDir(), id)
+	if err != nil {
+		t.Fatalf("failed to read pending file: %v", err)
+	}
+	if pending.Options != nil {
+		t.Errorf("options = %v, want nil for free-form question", pending.Options)
+	}
+
+	// Cleanup
+	_ = DeletePending(m.ConfigDir(), id)
 }
