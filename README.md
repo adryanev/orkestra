@@ -141,6 +141,14 @@ orkestra run \
   --model claude-sonnet-4-5 \
   --prompt "Fix the auth middleware"
 
+# Run with custom effort level (thinking depth).
+orkestra run \
+  --workspace <workspace-id> \
+  --agent claude \
+  --model claude-opus-4-8 \
+  --effort high \
+  --prompt "Solve this complex architecture problem"
+
 # Continue the saved session.
 orkestra resume \
   --workspace <workspace-id> \
@@ -184,6 +192,7 @@ orkestra run --workspace <workspace-id> --agent codex --prompt "Fix the failing 
 | `--workspace` | Workspace ID (required) |
 | `--agent` | Agent type: `claude` or `codex` (default: `claude`) |
 | `--model` | AI model to use (e.g., `claude-sonnet-4-5`, `claude-opus-4-8`, `gpt-5-codex-spark`) |
+| `--effort` | Thinking effort level for Claude Code: `low`, `medium`, `high`, `xhigh`, `max` |
 | `--prompt` | Prompt text (required) |
 | `--stream` | Output raw NDJSON/JSONL instead of parsed text |
 
