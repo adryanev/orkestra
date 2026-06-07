@@ -173,6 +173,7 @@ orkestra run --workspace <workspace-id> --agent codex --prompt "Fix the failing 
 | `orkestra run` | Starts Claude Code or Codex in a workspace |
 | `orkestra resume` | Continues the saved session for a workspace |
 | `orkestra stop` | Stops the persisted agent process for a workspace |
+| `orkestra models` | Lists available AI models for Claude Code and Codex |
 | `orkestra todo ...` | Creates, lists, updates, and deletes todos |
 | `orkestra mcp --workspace <workspace-id>` | Starts the stdio MCP server for one workspace |
 
@@ -185,6 +186,37 @@ orkestra run --workspace <workspace-id> --agent codex --prompt "Fix the failing 
 | `--model` | AI model to use (e.g., `claude-sonnet-4-5`, `claude-opus-4-8`, `gpt-5-codex-spark`) |
 | `--prompt` | Prompt text (required) |
 | `--stream` | Output raw NDJSON/JSONL instead of parsed text |
+
+### Listing Available Models
+
+Use `orkestra models` to see all available AI models:
+
+```bash
+# List all models
+orkestra models
+
+# List only Claude models
+orkestra models --agent claude
+
+# List only Codex models
+orkestra models --agent codex
+
+# Output as JSON
+orkestra models --json
+```
+
+Example output:
+```
+Claude Code Models:
+============================================================
+  claude-sonnet-4-5         Fast and efficient, great for most tasks [default]
+  claude-opus-4-8           Most capable model for complex reasoning [premium]
+
+Codex Models:
+============================================================
+  gpt-5-codex-spark         Fast coding assistant, optimized for speed [default]
+  gpt-5.3-codex             Balanced performance and quality [standard]
+```
 
 ## Workspaces
 
