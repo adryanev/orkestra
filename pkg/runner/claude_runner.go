@@ -382,6 +382,29 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 		return nil, fmt.Errorf("failed to persist agent process for workspace %s: %w", workspaceID, err)
 	}
 
+	// Suspension watcher: polls for pending/<ws-id>.json and terminates the
+	// agent when detected, so the MCP connection is not held open indefinitely
+	// while waiting for a human answer (R2). Not added to wg — exits via
+	// identity check when the agent exits naturally or is killed by stop.
+	go func() {
+		configDir := r.workspaceManager.ConfigDir()
+		for {
+			time.Sleep(500 * time.Millisecond)
+			// Exit if agent is no longer running (natural exit or killed)
+			if !process.IdentityMatches(pid, pid, startedAt) {
+				return
+			}
+			// Check for pending question
+			if pending, _ := mcp.ReadPending(configDir, workspaceID); pending != nil {
+				// Grace period: let MCP response drain
+				time.Sleep(500 * time.Millisecond)
+				// Terminate agent process group
+				_ = process.TerminateGroup(pid, process.DefaultGrace)
+				return
+			}
+		}
+	}()
+
 	var sessionInfo SessionInfo
 	var wg sync.WaitGroup
 
