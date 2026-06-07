@@ -18,25 +18,91 @@ type mcpServerEntry struct {
 	Args    []string `json:"args"`
 }
 
-// ClaudeConfig builds the MCP config naming the orkestra stdio server bound to
-// workspaceID. orkestraBin is the command the agent runs to start the server
-// (its own absolute path), so a nvm/asdf install resolves correctly.
-func ClaudeConfig(workspaceID, orkestraBin string) mcpConfigFile {
-	return mcpConfigFile{
-		MCPServers: map[string]mcpServerEntry{
-			"orkestra": {
-				Type:    "stdio",
-				Command: orkestraBin,
-				Args:    []string{"mcp", "--workspace", workspaceID},
-			},
-		},
+// DiscoverClaudeConfigs probes the standard Claude MCP config locations
+// in priority order and returns the content of the highest-priority file
+// that exists and is valid JSON. Returns nil if no config is found.
+// worktreeRoot is the git worktree path used to resolve project-local
+// (.claude/mcp.json) paths.
+func DiscoverClaudeConfigs(worktreeRoot string) *mcpConfigFile {
+	// Priority order: project-local > ~/.claude > ~/.config/claude
+	candidates := []string{}
+
+	if worktreeRoot != "" {
+		candidates = append(candidates, filepath.Join(worktreeRoot, ".claude", "mcp.json"))
 	}
+
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".claude", "mcp.json"),
+			filepath.Join(home, ".config", "claude", "mcp.json"),
+		)
+	}
+
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var cfg mcpConfigFile
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+		if len(cfg.MCPServers) > 0 {
+			return &cfg
+		}
+	}
+	return nil
+}
+
+// MergeConfig inserts the orkestra MCP server into an existing config.
+// It always overwrites an existing "orkestra" entry to ensure the server
+// points to the correct workspace. Returns a new config with the orkestra
+// server added alongside any existing servers.
+func MergeConfig(existing *mcpConfigFile, workspaceID, orkestraBin string) mcpConfigFile {
+	merged := mcpConfigFile{
+		MCPServers: make(map[string]mcpServerEntry),
+	}
+
+	// Copy existing servers.
+	if existing != nil {
+		for k, v := range existing.MCPServers {
+			merged.MCPServers[k] = v
+		}
+	}
+
+	// Add orkestra server (always overwrite to ensure correct workspace binding).
+	merged.MCPServers["orkestra"] = mcpServerEntry{
+		Type:    "stdio",
+		Command: orkestraBin,
+		Args:    []string{"mcp", "--workspace", workspaceID},
+	}
+
+	return merged
 }
 
 // WriteClaudeConfig writes the MCP config for workspaceID under
 // configDir/mcp/<workspace-id>.json and returns the path.
-func WriteClaudeConfig(configDir, workspaceID, orkestraBin string) (string, error) {
-	cfg := ClaudeConfig(workspaceID, orkestraBin)
+// If discovery is true, it probes the user's existing Claude MCP config
+// and merges the orkestra server into it rather than replacing it.
+func WriteClaudeConfig(configDir, workspaceID, orkestraBin string, discovery bool, worktreeRoot string) (string, error) {
+	var cfg mcpConfigFile
+
+	if discovery {
+		existing := DiscoverClaudeConfigs(worktreeRoot)
+		cfg = MergeConfig(existing, workspaceID, orkestraBin)
+	} else {
+		cfg = mcpConfigFile{
+			MCPServers: map[string]mcpServerEntry{
+				"orkestra": {
+					Type:    "stdio",
+					Command: orkestraBin,
+					Args:    []string{"mcp", "--workspace", workspaceID},
+				},
+			},
+		}
+	}
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return "", err
