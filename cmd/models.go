@@ -40,16 +40,18 @@ func detectClaudeModels() []Model {
 		desc string
 		tier string
 	}{
-		{"claude-sonnet-4-5", "Fast and efficient, great for most tasks", "default"},
-		{"claude-opus-4-8", "Most capable model for complex reasoning", "premium"},
-		{"claude-3-7-sonnet", "Enhanced sonnet with improved reasoning", "standard"},
-		{"claude-3-5-sonnet", "Previous generation sonnet (legacy)", "legacy"},
+		{"claude-opus-4-8", "Anthropic's most capable model for complex reasoning and agentic coding", "premium"},
+		{"claude-sonnet-4-6", "The best combination of speed and intelligence", "default"},
+		{"claude-haiku-4-5", "The fastest model with near-frontier intelligence", "fast"},
 	}
 
 	// Check if CLI mentions specific models in help
+	// Claude CLI accepts both full names (claude-opus-4-8) and aliases (opus, sonnet, haiku)
 	for _, pattern := range claudeModelPatterns {
+		// Check for full model name or alias in help text
+		alias := strings.Split(pattern.name, "-")[2] // opus, sonnet, haiku
 		if strings.Contains(helpText, pattern.name) ||
-			strings.Contains(helpText, strings.Split(pattern.name, "-")[1]) {
+			strings.Contains(helpText, alias) {
 			models = append(models, Model{
 				Name:        pattern.name,
 				Agent:       "claude",
@@ -87,9 +89,9 @@ func detectCodexModels() []Model {
 		desc string
 		tier string
 	}{
-		{"gpt-5-codex-spark", "Fast coding assistant, optimized for speed", "default"},
-		{"gpt-5.3-codex", "Balanced performance and quality", "standard"},
-		{"gpt-5.5-codex-xhigh", "Highest quality for complex code review", "premium"},
+		{"gpt-5.5-codex-xhigh", "Highest quality for complex code review and reasoning", "premium"},
+		{"gpt-5.3-codex", "Balanced performance and quality for general coding tasks", "standard"},
+		{"gpt-5-codex-spark", "Fast coding assistant, optimized for speed and quick iterations", "default"},
 	}
 
 	for _, pattern := range codexModelPatterns {
@@ -115,56 +117,49 @@ func detectCodexModels() []Model {
 // getFallbackModels returns hardcoded fallback models
 func getFallbackModels() []Model {
 	return []Model{
-		// Claude Code Models
-		{
-			Name:        "claude-sonnet-4-5",
-			Agent:       "claude",
-			Description: "Fast and efficient, great for most tasks",
-			Tier:        "default",
-			Source:      "fallback",
-		},
+		// Claude Code Models (from https://docs.anthropic.com/en/docs/about-claude/models)
 		{
 			Name:        "claude-opus-4-8",
 			Agent:       "claude",
-			Description: "Most capable model for complex reasoning",
+			Description: "Anthropic's most capable model for complex reasoning and agentic coding",
 			Tier:        "premium",
 			Source:      "fallback",
 		},
 		{
-			Name:        "claude-3-5-sonnet",
+			Name:        "claude-sonnet-4-6",
 			Agent:       "claude",
-			Description: "Previous generation sonnet (legacy)",
-			Tier:        "legacy",
+			Description: "The best combination of speed and intelligence",
+			Tier:        "default",
 			Source:      "fallback",
 		},
 		{
-			Name:        "claude-3-7-sonnet",
+			Name:        "claude-haiku-4-5",
 			Agent:       "claude",
-			Description: "Enhanced sonnet with improved reasoning",
-			Tier:        "standard",
+			Description: "The fastest model with near-frontier intelligence",
+			Tier:        "fast",
 			Source:      "fallback",
 		},
 
-		// Codex Models
+		// Codex Models (OpenAI GPT family for coding)
 		{
-			Name:        "gpt-5-codex-spark",
+			Name:        "gpt-5.5-codex-xhigh",
 			Agent:       "codex",
-			Description: "Fast coding assistant, optimized for speed",
-			Tier:        "default",
+			Description: "Highest quality for complex code review and reasoning",
+			Tier:        "premium",
 			Source:      "fallback",
 		},
 		{
 			Name:        "gpt-5.3-codex",
 			Agent:       "codex",
-			Description: "Balanced performance and quality",
+			Description: "Balanced performance and quality for general coding tasks",
 			Tier:        "standard",
 			Source:      "fallback",
 		},
 		{
-			Name:        "gpt-5.5-codex-xhigh",
+			Name:        "gpt-5-codex-spark",
 			Agent:       "codex",
-			Description: "Highest quality for complex code review",
-			Tier:        "premium",
+			Description: "Fast coding assistant, optimized for speed and quick iterations",
+			Tier:        "default",
 			Source:      "fallback",
 		},
 	}
