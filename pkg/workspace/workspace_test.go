@@ -234,7 +234,7 @@ func TestSessionProcessLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := m.SetSessionProcess("ws1", "claude", 4242, 4242, 99); err != nil {
+	if err := m.SetSessionProcess("ws1", "claude", "", 4242, 4242, 99); err != nil {
 		t.Fatal(err)
 	}
 
@@ -264,7 +264,7 @@ func TestSessionProcessLifecycle(t *testing.T) {
 	}
 
 	// ClearSessionProcess on a record keeps the id but zeroes process fields.
-	if err := reloaded.SetSessionProcess("ws1", "claude", 100, 100, 5); err != nil {
+	if err := reloaded.SetSessionProcess("ws1", "claude", "", 100, 100, 5); err != nil {
 		t.Fatal(err)
 	}
 	if err := reloaded.ClearSessionProcess("ws1"); err != nil {

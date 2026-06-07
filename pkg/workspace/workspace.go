@@ -44,6 +44,7 @@ type Session struct {
 	Agent       string `json:"agent"`                // e.g., "claude", "codex"
 	SessionID   string `json:"session_id,omitempty"` // agent-specific session ID
 	ThreadID    string `json:"thread_id,omitempty"`  // agent-specific thread ID (for codex)
+	Model       string `json:"model,omitempty"`      // selected AI model
 	// Process tracking for cross-process `stop`. PID/PGID identify the running
 	// agent; StartedAt stores an OS process-start identity token captured when
 	// `run` spawned it, so `stop` can reject recycled PIDs.
@@ -313,7 +314,7 @@ func (m *Manager) AddSession(session Session) error {
 // workspace so a separate `stop` process can signal it. It preserves any
 // existing session/thread id and agent on the record (a resume already has
 // one), creating a fresh record when none exists.
-func (m *Manager) SetSessionProcess(workspaceID, agent string, pid, pgid int, startedAt int64) error {
+func (m *Manager) SetSessionProcess(workspaceID, agent, model string, pid, pgid int, startedAt int64) error {
 	return m.mutate(func() error {
 		s, ok := m.sessions[workspaceID]
 		if !ok {
@@ -322,6 +323,9 @@ func (m *Manager) SetSessionProcess(workspaceID, agent string, pid, pgid int, st
 		}
 		if agent != "" {
 			s.Agent = agent
+		}
+		if model != "" {
+			s.Model = model
 		}
 		s.PID = pid
 		s.PGID = pgid

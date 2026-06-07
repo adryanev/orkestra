@@ -87,7 +87,7 @@ func NewRunner(wm *workspace.Manager) *Runner {
 // Run executes an agent command in a given workspace. The runner lock guards
 // only the short setup section; it is released before the agent executes so a
 // concurrent Stop is never blocked by a long-running agent (KTD4).
-func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume bool, stream bool, renderOutput bool) (*SessionInfo, error) {
+func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume bool, stream bool, renderOutput bool, model string, effort string) (*SessionInfo, error) {
 	r.Lock()
 	ws, err := r.workspaceManager.GetWorkspace(workspaceID)
 	if err != nil {
@@ -112,6 +112,10 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 		}
 		resumeSessionID = s.SessionID
 		resumeThreadID = s.ThreadID
+		// If no model specified, use the saved model from session
+		if model == "" && s.Model != "" {
+			model = s.Model
+		}
 		switch agent {
 		case Claude:
 			if resumeSessionID == "" {
@@ -139,7 +143,7 @@ func (r *Runner) Run(workspaceID string, agent AgentType, prompt string, resume 
 	}
 	r.Unlock()
 
-	sessionInfo, err := r.executeAgent(workspaceID, worktreePath, agent, prompt, resumeSessionID, resumeThreadID, token, stream, renderOutput)
+	sessionInfo, err := r.executeAgent(workspaceID, worktreePath, agent, prompt, resumeSessionID, resumeThreadID, token, stream, renderOutput, model, effort)
 	if err != nil {
 		return sessionInfo, fmt.Errorf("agent execution failed for workspace %s: %w", workspaceID, err)
 	}
@@ -253,7 +257,7 @@ func composeEnv(shell *env.ShellEnv, token string) []string {
 // is unit testable without spawning a process. mcpConfigPath, when non-empty,
 // wires Claude's --mcp-config so the agent can call back into the orkestra MCP
 // server.
-func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mcpConfigPath string) (string, []string, error) {
+func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mcpConfigPath, model, effort string) (string, []string, error) {
 	switch agent {
 	case Claude:
 		args := []string{"--output-format", "stream-json", "--verbose", "-p", prompt}
@@ -262,6 +266,14 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mc
 			args = append(args, "--resume", resumeSessionID)
 		}
 		args = append(args, "--permission-mode", "bypassPermissions")
+		// Add model selection if specified
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		// Add effort level if specified (Claude Code only)
+		if effort != "" {
+			args = append(args, "--effort", effort)
+		}
 		// Disable the agent's built-in LSP tool so Orkestra's centrally
 		// managed LSP tools are used instead.
 		args = append(args, "--disallowedTools", "EnterWorktree,ExitWorktree,LSP")
@@ -273,16 +285,26 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mc
 	case Codex:
 		if resumeThreadID != "" {
 			// codex exec resume <thread_id> --json "prompt"
-			return "codex", []string{"exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resumeThreadID, prompt}, nil
+			args := []string{"exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox"}
+			if model != "" {
+				args = append(args, "--model", model)
+			}
+			args = append(args, resumeThreadID, prompt)
+			return "codex", args, nil
 		}
-		return "codex", []string{"exec", "--json", "--dangerously-bypass-approvals-and-sandbox", prompt}, nil
+		args := []string{"exec", "--json", "--dangerously-bypass-approvals-and-sandbox"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		args = append(args, prompt)
+		return "codex", args, nil
 
 	default:
 		return "", nil, fmt.Errorf("unsupported agent type: %s", agent)
 	}
 }
 
-func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool, renderOutput bool) (*SessionInfo, error) {
+func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType, prompt, resumeSessionID, resumeThreadID, token string, stream bool, renderOutput bool, model, effort string) (*SessionInfo, error) {
 	shellEnv := env.Captured()
 	// Resolve the agent binary against the captured shell PATH. exec.Command
 	// resolves bare names against orkestra's own PATH, not cmd.Env, so an
@@ -314,7 +336,7 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 		}
 	}
 
-	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID, mcpConfigPath)
+	_, args, err := buildAgentArgs(agent, prompt, resumeSessionID, resumeThreadID, mcpConfigPath, model, effort)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +376,7 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 		}
 		return nil, fmt.Errorf("failed to capture agent process identity for workspace %s: %w", workspaceID, err)
 	}
-	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), pid, pid, startedAt); err != nil {
+	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), model, pid, pid, startedAt); err != nil {
 		_ = process.TerminateGroup(pid, process.DefaultGrace)
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("failed to persist agent process for workspace %s: %w", workspaceID, err)
