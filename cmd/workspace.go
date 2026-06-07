@@ -32,7 +32,7 @@ var workspaceCreateCmd = &cobra.Command{
 		if workspaceRepo == "" {
 			emitError(fmt.Errorf("--repo is required"))
 		}
-		ws, err := wm.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile, workspaceBaseBranch)
+		ws, err := workspaceManager.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile, workspaceBaseBranch)
 		if err != nil {
 			emitError(err)
 		}
@@ -48,7 +48,7 @@ var workspaceListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all workspaces",
 	Run: func(cmd *cobra.Command, args []string) {
-		workspaces, err := wm.ListWorkspaces()
+		workspaces, err := workspaceManager.ListWorkspaces()
 		if err != nil {
 			emitError(err)
 		}
@@ -104,7 +104,7 @@ var workspaceRemoveCmd = &cobra.Command{
 			}
 		}
 
-		if err := wm.RemoveWorkspace(workspaceRemoveID, workspaceRemoveForce); err != nil {
+		if err := workspaceManager.RemoveWorkspace(workspaceRemoveID, workspaceRemoveForce); err != nil {
 			emitError(err)
 		}
 		emitResult(
