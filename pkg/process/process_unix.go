@@ -1,3 +1,6 @@
+//go:build unix
+// +build unix
+
 // Package process provides cross-process child-control primitives for orkestra.
 //
 // orkestra runs `run` and `stop` as separate, short-lived OS processes, so an
