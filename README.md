@@ -55,7 +55,7 @@ The important idea is that Orkestra is a CLI with persistent state. While `run` 
 
 ## Requirements
 
-- Go, for building the binary
+- Go 1.26+
 - Git, for worktree creation
 - Claude Code and/or Codex CLI, depending on which agent you run
 - GitHub CLI, only when using `--gh-profile`
@@ -70,7 +70,7 @@ The important idea is that Orkestra is a CLI with persistent state. While `run` 
 ```bash
 git clone https://github.com/adryanev/orkestra
 cd orkestra
-go build -o ~/.local/bin/orkestra ./main.go
+go build -o ~/.local/bin/orkestra .
 ```
 
 ## Quick Start
@@ -231,7 +231,7 @@ That mirrors CI: build, vet, lint, and race-enabled tests.
 To prove the compiled CLI works through real command paths, build the binary and run the E2E script:
 
 ```bash
-go build -o ./orkestra ./main.go
+go build -o ./orkestra .
 ./scripts/binary-e2e.sh ./orkestra
 ```
 

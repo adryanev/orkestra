@@ -4,7 +4,7 @@ CLI tool + MCP server for managing isolated agent workspaces, running Claude Cod
 
 ## Stack
 
-- Go 1.22+ (single binary, no runtime deps)
+- Go 1.26+ (single binary, no runtime deps)
 - Cobra + Viper for CLI/config
 - git worktree for workspace isolation
 - stdlib `os/exec` for process management
@@ -28,66 +28,19 @@ orkestra mcp            — MCP server (stdio mode), agent calls back
 - `docs/solutions/` — documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
 - `CONCEPTS.md` — shared domain vocabulary for project-specific entities, named processes, and status concepts. Relevant when orienting to the codebase or discussing Orkestra domain concepts.
 
-## What to build (Phase 1 MVP)
+## Commands
 
-### 1. CLI skeleton
-- Cobra root command
-- Viper config (XORKESTRA_HOME env var, default ~/.orkestra/)
-- Subcommands: workspace, run, resume, stop, mcp, todo, init
-
-### 2. `orkestra init`
-- Create ~/.orkestra/ dir structure
-- Create empty workspaces.json, sessions.json
-
-### 3. `orkestra workspace create`
-- Args: --repo <path> --name <name> --branch <branch> (optional)
-- Creates git worktree from origin/<default-branch>
-- Registers in workspaces.json with UUID, worktree_path, branch, status
-- Auto-detect default branch (origin/HEAD -> origin/main -> origin/master)
-
-### 4. `orkestra run`
-- Args: --workspace <id> --prompt <string> (or stdin) --agent claude|codex
-- **Claude mode**: `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions --disallowedTools "EnterWorktree,ExitWorktree"`
-- Stream NDJSON stdout line by line, print readable output
-- Capture `session_id` from `{"type":"system","session_id":"..."}` first line
-- Save session_id to sessions.json
-- On exit: print usage report from `{"type":"result","usage":{...}}`
-
-### 5. `orkestra resume`
-- Args: --workspace <id> --prompt <string>
-- Read session_id from sessions.json
-- Spawn Claude with `--resume <session_id>` + new prompt
-- Same streaming + capture behavior as `run`
-
-### 6. `orkestra stop`
-- Args: --workspace <id>
-- Kill the running agent process for that workspace
-- Clean up process tracking state
-
-### 7. `orkestra mcp` (MCP server)
-- Stdio MCP server using stdio transport
-- Runs on stdin/stdout, reads JSON-RPC messages
-- Implements these tools:
-  - `get_workspace_info` — return workspace path, branch, status
-  - `rename_branch` — rename git branch + update workspace state
-  - `notify` — write notification to a per-workspace log file
-- NOT a running HTTP server — just stdio mode (like Claude's MCP)
-
-### 8. Process management
-- Track child PIDs per workspace in-memory + persisted
-- Handle graceful and forceful process termination
-- Stdin/stdout/stderr pipe management
-
-### 9. Git auth
-- Inject GH_TOKEN from `gh auth token --user <profile>` when available
-- --gh-profile flag per workspace
-
-### 10. `orkestra todo`
-- create/list/update/delete — JSON file persistence
-- NOT a kanban UI, just CLI commands
-
-### 11. `orkestra workspace list`
-- List all workspaces with status, branch, name
+| Command | Purpose |
+|---------|---------|
+| `orkestra init` | Creates the Orkestra state directory and initial JSON files |
+| `orkestra workspace create` | Creates a git worktree and registers it as a workspace |
+| `orkestra workspace list` | Lists registered workspaces |
+| `orkestra workspace remove` | Removes a workspace and its git worktree |
+| `orkestra run` | Starts Claude Code or Codex in a workspace |
+| `orkestra resume` | Continues the saved session for a workspace |
+| `orkestra stop` | Stops the persisted agent process for a workspace |
+| `orkestra todo ...` | Creates, lists, updates, and deletes todos |
+| `orkestra mcp --workspace <id>` | Starts the stdio MCP server for one workspace |
 
 ## Hard rules
 
@@ -101,7 +54,7 @@ orkestra mcp            — MCP server (stdio mode), agent calls back
 
 ## Design decisions
 
-- **Why not Tauri/Rust?** Hermes runs on Linux VPS, not macOS. Go binary is portable, zero native deps, same language as Lexicon MCPs.
+- **Why not Tauri/Rust?** Single Go binary is portable, zero native deps, same language as MCP ecosystem.
 - **State**: JSON files, not DB. Simpler, grep-able, human-editable for debugging.
 - **MCP**: stdio mode only. The orchestrator spawns the MCP server alongside the agent, and the agent calls back through workspace-bound tools.
 - **Session IDs**: Claude uses `session_id`, Codex uses `thread_id`. Both saved in sessions.json as `{workspace_id: {agent: "claude", id: "..."}}`.
