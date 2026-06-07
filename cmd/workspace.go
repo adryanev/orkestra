@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"strings"
 
 	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
@@ -72,11 +74,22 @@ var workspaceListCmd = &cobra.Command{
 }
 
 var workspaceRemoveCmd = &cobra.Command{
-	Use:   "remove",
-	Short: "Remove a workspace and its worktree",
+	Use:     "remove",
+	Aliases: []string{"delete"},
+	Short:   "Remove a workspace and its worktree",
 	Run: func(cmd *cobra.Command, args []string) {
 		if workspaceRemoveID == "" {
 			emitError(fmt.Errorf("--id is required"))
+		}
+
+		if !workspaceRemoveForce {
+			fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to remove workspace %s and its worktree? [y/N] ", workspaceRemoveID)
+			scanner := bufio.NewScanner(cmd.InOrStdin())
+			scanner.Scan()
+			if answer := strings.TrimSpace(scanner.Text()); answer != "y" && answer != "Y" {
+				fmt.Fprintln(cmd.OutOrStdout(), "Cancelled")
+				return
+			}
 		}
 
 		// Guard against tearing down a workspace with a live agent. With
