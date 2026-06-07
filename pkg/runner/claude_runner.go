@@ -293,12 +293,12 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	}
 
 	// Wire the orkestra MCP server into the agent so it can call back. Claude
-	// receives an --mcp-config file with existing user MCP servers merged in;
-	// Codex is registered before the run and unregistered after exit.
+	// receives an --mcp-config file; Codex is registered before the run and
+	// unregistered after exit.
 	orkestraBin, _ := os.Executable()
 	var mcpConfigPath string
 	if agent == Claude && orkestraBin != "" {
-		if p, err := mcp.WriteClaudeConfig(r.workspaceManager.ConfigDir(), workspaceID, orkestraBin, true, worktreePath); err != nil {
+		if p, err := mcp.WriteClaudeConfig(r.workspaceManager.ConfigDir(), workspaceID, orkestraBin); err != nil {
 			return nil, fmt.Errorf("failed to write MCP config for workspace %s: %w", workspaceID, err)
 		} else {
 			mcpConfigPath = p
