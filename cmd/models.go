@@ -49,9 +49,14 @@ func detectClaudeModels() []Model {
 	// Claude CLI accepts both full names (claude-opus-4-8) and aliases (opus, sonnet, haiku)
 	for _, pattern := range claudeModelPatterns {
 		// Check for full model name or alias in help text
-		alias := strings.Split(pattern.name, "-")[2] // opus, sonnet, haiku
+		// Extract alias: "claude-opus-4-8" -> "opus" (index 1)
+		parts := strings.Split(pattern.name, "-")
+		alias := ""
+		if len(parts) >= 2 {
+			alias = parts[1]
+		}
 		if strings.Contains(helpText, pattern.name) ||
-			strings.Contains(helpText, alias) {
+			(alias != "" && strings.Contains(helpText, alias)) {
 			models = append(models, Model{
 				Name:        pattern.name,
 				Agent:       "claude",
@@ -95,8 +100,15 @@ func detectCodexModels() []Model {
 	}
 
 	for _, pattern := range codexModelPatterns {
+		// Check for full model name or meaningful substring
+		// Extract meaningful token: "gpt-5.5-codex-xhigh" -> "5.5-codex-xhigh"
+		parts := strings.SplitN(pattern.name, "-", 2)
+		meaningfulToken := ""
+		if len(parts) > 1 {
+			meaningfulToken = parts[1]
+		}
 		if strings.Contains(helpText, pattern.name) ||
-			strings.Contains(helpText, strings.Split(pattern.name, "-")[0]) {
+			(meaningfulToken != "" && strings.Contains(helpText, meaningfulToken)) {
 			models = append(models, Model{
 				Name:        pattern.name,
 				Agent:       "codex",
@@ -289,7 +301,7 @@ func printModelsTable(models []Model) {
 	fmt.Println("  orkestra run --workspace <id> --model <model-name> --prompt \"...\"")
 	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  orkestra run --workspace fix-auth --model claude-sonnet-4-5 --prompt \"Fix auth\"")
+	fmt.Println("  orkestra run --workspace fix-auth --model claude-sonnet-4-6 --prompt \"Fix auth\"")
 	fmt.Println("  orkestra run --workspace fix-tests --model gpt-5-codex-spark --prompt \"Fix tests\"")
 }
 

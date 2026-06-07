@@ -285,16 +285,18 @@ func buildAgentArgs(agent AgentType, prompt, resumeSessionID, resumeThreadID, mc
 	case Codex:
 		if resumeThreadID != "" {
 			// codex exec resume <thread_id> --json "prompt"
-			args := []string{"exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", resumeThreadID, prompt}
+			args := []string{"exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox"}
 			if model != "" {
 				args = append(args, "--model", model)
 			}
+			args = append(args, resumeThreadID, prompt)
 			return "codex", args, nil
 		}
-		args := []string{"exec", "--json", "--dangerously-bypass-approvals-and-sandbox", prompt}
+		args := []string{"exec", "--json", "--dangerously-bypass-approvals-and-sandbox"}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
+		args = append(args, prompt)
 		return "codex", args, nil
 
 	default:

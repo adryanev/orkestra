@@ -215,16 +215,18 @@ orkestra models --json
 ```
 
 Example output:
-```
+```text
 Claude Code Models:
 ============================================================
-  claude-sonnet-4-5         Fast and efficient, great for most tasks [default]
-  claude-opus-4-8           Most capable model for complex reasoning [premium]
+  claude-opus-4-8           Anthropic's most capable model for complex reasoning and agentic coding [premium] ✓
+  claude-sonnet-4-6         The best combination of speed and intelligence [default] ✓
+  claude-haiku-4-5          The fastest model with near-frontier intelligence [fast] ✓
 
 Codex Models:
 ============================================================
-  gpt-5-codex-spark         Fast coding assistant, optimized for speed [default]
-  gpt-5.3-codex             Balanced performance and quality [standard]
+  gpt-5.5-codex-xhigh       Highest quality for complex code review and reasoning [premium]
+  gpt-5.3-codex             Balanced performance and quality for general coding tasks [standard]
+  gpt-5-codex-spark         Fast coding assistant, optimized for speed and quick iterations [default]
 ```
 
 ## Workspaces
