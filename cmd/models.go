@@ -255,9 +255,10 @@ func printModelsTable(models []Model) {
 	codexModels := []Model{}
 
 	for _, m := range models {
-		if m.Agent == "claude" {
+		switch m.Agent {
+		case "claude":
 			claudeModels = append(claudeModels, m)
-		} else if m.Agent == "codex" {
+		case "codex":
 			codexModels = append(codexModels, m)
 		}
 	}
