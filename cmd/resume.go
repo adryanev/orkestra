@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/adryanev/orkestra/pkg/mcp"
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/spf13/cobra"
 )
@@ -13,6 +15,7 @@ var (
 	resumeAgent     string
 	resumeModel     string
 	resumeEffort    string
+	resumeAnswer    string
 )
 
 var resumeCmd = &cobra.Command{
@@ -22,12 +25,58 @@ var resumeCmd = &cobra.Command{
 		if resumeWorkspace == "" {
 			emitError(fmt.Errorf("--workspace is required"))
 		}
-		if resumePrompt == "" && len(args) == 0 {
-			emitError(fmt.Errorf("prompt required (--prompt or argument)"))
-		}
-		prompt := resumePrompt
-		if prompt == "" {
-			prompt = args[0]
+
+		// Handle --answer flag (R3)
+		var prompt string
+		if resumeAnswer != "" {
+			configDir := getConfigDir()
+			pending, err := mcp.ReadPending(configDir, resumeWorkspace)
+			if err != nil {
+				emitError(fmt.Errorf("failed to read pending question: %w", err))
+			}
+			if pending == nil {
+				emitError(fmt.Errorf("no pending question for workspace %s", resumeWorkspace))
+			}
+
+			// Synthesize continuation prompt with Q&A
+			prompt = fmt.Sprintf(`Your ask_user tool call was answered.
+
+Question: %s
+Answer: %s
+
+Resume the task from where you left off.`, pending.Question, resumeAnswer)
+
+			// Append user-provided prompt if present
+			if resumePrompt != "" {
+				prompt = prompt + "\n\n" + resumePrompt
+			}
+
+			// Delete pending file
+			if err := mcp.DeletePending(configDir, resumeWorkspace); err != nil {
+				emitError(fmt.Errorf("failed to delete pending file: %w", err))
+			}
+
+			// Write answer audit record
+			record := mcp.AnswerRecord{
+				WorkspaceID: resumeWorkspace,
+				Question:    pending.Question,
+				Options:     pending.Options,
+				Answer:      resumeAnswer,
+				AskedAt:     pending.AskedAt,
+				AnsweredAt:  time.Now().UTC(),
+			}
+			if err := mcp.AppendAnswer(configDir, resumeWorkspace, record); err != nil {
+				emitError(fmt.Errorf("failed to write answer record: %w", err))
+			}
+		} else {
+			// Normal resume (no --answer)
+			if resumePrompt == "" && len(args) == 0 {
+				emitError(fmt.Errorf("prompt required (--prompt or argument)"))
+			}
+			prompt = resumePrompt
+			if prompt == "" {
+				prompt = args[0]
+			}
 		}
 
 		var a runner.AgentType
@@ -54,4 +103,5 @@ func init() {
 	resumeCmd.Flags().StringVar(&resumeAgent, "agent", "claude", "Agent type (claude or codex)")
 	resumeCmd.Flags().StringVar(&resumeModel, "model", "", "Model to use (overrides saved model)")
 	resumeCmd.Flags().StringVar(&resumeEffort, "effort", "", "Effort level for Claude Code (low, medium, high, xhigh, max)")
+	resumeCmd.Flags().StringVar(&resumeAnswer, "answer", "", "Answer to pending question (reads and deletes pending/<ws-id>.json)")
 }
