@@ -1,3 +1,6 @@
+//go:build unix
+// +build unix
+
 // Package env captures the user's interactive login-shell environment so
 // spawned agents see the same PATH and variables a terminal session would
 // (nvm/fnm/asdf PATH entries, GOPATH, etc.).

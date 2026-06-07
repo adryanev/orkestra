@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: windows
+            arch: amd64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          SUFFIX=""
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            SUFFIX=".exe"
+          fi
+          go build -o orkestra-${{ matrix.os }}-${{ matrix.arch }}${SUFFIX} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orkestra-${{ matrix.os }}-${{ matrix.arch }}
+          path: orkestra-${{ matrix.os }}-${{ matrix.arch }}*
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p ./release-assets
+          for dir in ./artifacts/orkestra-*; do
+            cp "$dir"/* ./release-assets/
+          done
+          ls -la ./release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./release-assets/*
+          generate_release_notes: true
+          make_latest: true

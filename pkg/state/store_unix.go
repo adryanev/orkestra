@@ -1,3 +1,6 @@
+//go:build unix
+// +build unix
+
 // Package state provides cross-process-safe persistence helpers for orkestra's
 // JSON state files. orkestra runs as a series of separate, often parallel, CLI
 // processes, so an in-process mutex is not enough — writes are serialized by an

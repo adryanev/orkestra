@@ -67,6 +67,46 @@ The important idea is that Orkestra is a CLI with persistent state. While `run` 
 
 ## Installation
 
+### From Release (Recommended)
+
+Download the latest binary for your platform from the [Releases page](https://github.com/adryanev/orkestra/releases):
+
+**Linux:**
+```bash
+# AMD64
+wget https://github.com/adryanev/orkestra/releases/latest/download/orkestra-linux-amd64
+chmod +x orkestra-linux-amd64
+sudo mv orkestra-linux-amd64 /usr/local/bin/orkestra
+
+# ARM64
+wget https://github.com/adryanev/orkestra/releases/latest/download/orkestra-linux-arm64
+chmod +x orkestra-linux-arm64
+sudo mv orkestra-linux-arm64 /usr/local/bin/orkestra
+```
+
+**macOS:**
+```bash
+# Apple Silicon (M1/M2/M3)
+curl -LO https://github.com/adryanev/orkestra/releases/latest/download/orkestra-darwin-arm64
+chmod +x orkestra-darwin-arm64
+sudo mv orkestra-darwin-arm64 /usr/local/bin/orkestra
+
+# Intel
+curl -LO https://github.com/adryanev/orkestra/releases/latest/download/orkestra-darwin-amd64
+chmod +x orkestra-darwin-amd64
+sudo mv orkestra-darwin-amd64 /usr/local/bin/orkestra
+```
+
+**Windows:**
+```powershell
+# AMD64
+curl -LO https://github.com/adryanev/orkestra/releases/latest/download/orkestra-windows-amd64.exe
+# Move to a directory in your PATH, e.g.:
+move orkestra-windows-amd64.exe C:\Windows\orkestra.exe
+```
+
+### From Source
+
 ```bash
 git clone https://github.com/adryanev/orkestra
 cd orkestra
@@ -239,7 +279,8 @@ The E2E script creates temporary Orkestra state, a real git repository with a ba
 
 ## Design Notes
 
-- Single Go binary for Linux and macOS
+- Pre-built binaries for Linux, macOS, and Windows
+- Single Go binary with no runtime dependencies
 - JSON state files for simple inspection and recovery
 - Atomic, locked writes for workspace, session, and todo state
 - Stdio MCP transport so agents do not need a port
