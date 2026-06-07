@@ -118,7 +118,7 @@ func init() {
 	workspaceCreateCmd.Flags().StringVar(&workspaceName, "name", "", "Workspace name")
 	workspaceCreateCmd.Flags().StringVar(&workspaceBranch, "branch", "", "Branch name (optional)")
 	workspaceCreateCmd.Flags().StringVar(&workspaceGhProfile, "gh-profile", "", "GitHub auth profile")
-	workspaceCreateCmd.Flags().StringVar(&workspaceBaseBranch, "base-branch", "", "Base branch to create worktree from (default: auto-detect origin/HEAD)")
+	workspaceCreateCmd.Flags().StringVar(&workspaceBaseBranch, "base-branch", "", "Base branch to create worktree from (bare name, e.g. 'main','develop'; tool prepends 'origin/')")
 
 	workspaceRemoveCmd.Flags().StringVar(&workspaceRemoveID, "id", "", "Workspace ID")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "Force removal of a dirty worktree or a workspace with a running agent")

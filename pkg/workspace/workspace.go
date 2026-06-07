@@ -207,7 +207,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile, baseBranch 
 	// Resolve the upstream branch to check out the worktree from. When the
 	// caller supplies --base-branch, use it directly; otherwise auto-detect
 	// (origin/HEAD → origin/main → origin/master).
-	startPoint := baseBranch
+	startPoint := strings.TrimPrefix(baseBranch, "origin/")
 	if startPoint == "" {
 		detected, err := detectDefaultBranch(repoPath)
 		if err != nil {
@@ -242,7 +242,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile, baseBranch 
 		RepoPath:     repoPath,
 		WorktreePath: worktreePath,
 		Branch:       branch,
-		BaseBranch:   baseBranch,
+		BaseBranch:   startPoint,
 		Status:       "active",
 		GhProfile:    ghProfile,
 	}

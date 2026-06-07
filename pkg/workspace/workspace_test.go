@@ -114,6 +114,35 @@ func TestCreateWorkspace(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceWithBaseBranch(t *testing.T) {
+	repo := setupRepoWithOrigin(t, "develop")
+	cfg := t.TempDir()
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := m.CreateWorkspace("Feature", repo, "", "", "develop")
+	if err != nil {
+		t.Fatalf("CreateWorkspace with base branch: %v", err)
+	}
+	if ws.BaseBranch != "develop" {
+		t.Errorf("BaseBranch = %q, want %q", ws.BaseBranch, "develop")
+	}
+	if _, err := os.Stat(ws.WorktreePath); err != nil {
+		t.Errorf("worktree not created at %s: %v", ws.WorktreePath, err)
+	}
+
+	// Passing "origin/develop" should strip the prefix and not double it.
+	ws2, err := m.CreateWorkspace("Feature2", repo, "", "", "origin/develop")
+	if err != nil {
+		t.Fatalf("CreateWorkspace with origin/ prefix: %v", err)
+	}
+	if ws2.BaseBranch != "develop" {
+		t.Errorf("BaseBranch = %q, want develop after stripping prefix", ws2.BaseBranch)
+	}
+}
+
 func TestCreateWorkspaceRejectsNonRepo(t *testing.T) {
 	m, err := NewManager(t.TempDir())
 	if err != nil {
