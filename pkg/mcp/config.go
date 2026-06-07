@@ -56,8 +56,9 @@ func DiscoverClaudeConfigs(worktreeRoot string) *mcpConfigFile {
 }
 
 // MergeConfig inserts the orkestra MCP server into an existing config.
-// It never overwrites an existing "orkestra" entry. Returns a new config
-// with the orkestra server added alongside any existing servers.
+// It always overwrites an existing "orkestra" entry to ensure the server
+// points to the correct workspace. Returns a new config with the orkestra
+// server added alongside any existing servers.
 func MergeConfig(existing *mcpConfigFile, workspaceID, orkestraBin string) mcpConfigFile {
 	merged := mcpConfigFile{
 		MCPServers: make(map[string]mcpServerEntry),
@@ -70,13 +71,11 @@ func MergeConfig(existing *mcpConfigFile, workspaceID, orkestraBin string) mcpCo
 		}
 	}
 
-	// Add orkestra server (don't overwrite if user already has one named "orkestra").
-	if _, exists := merged.MCPServers["orkestra"]; !exists {
-		merged.MCPServers["orkestra"] = mcpServerEntry{
-			Type:    "stdio",
-			Command: orkestraBin,
-			Args:    []string{"mcp", "--workspace", workspaceID},
-		}
+	// Add orkestra server (always overwrite to ensure correct workspace binding).
+	merged.MCPServers["orkestra"] = mcpServerEntry{
+		Type:    "stdio",
+		Command: orkestraBin,
+		Args:    []string{"mcp", "--workspace", workspaceID},
 	}
 
 	return merged

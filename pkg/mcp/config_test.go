@@ -44,7 +44,7 @@ func TestMergeConfigPreservesExistingServers(t *testing.T) {
 	}
 }
 
-func TestMergeConfigDoesNotOverwriteExistingOrkestra(t *testing.T) {
+func TestMergeConfigAlwaysOverwritesOrkestra(t *testing.T) {
 	existing := &mcpConfigFile{
 		MCPServers: map[string]mcpServerEntry{
 			"orkestra": {
@@ -56,13 +56,16 @@ func TestMergeConfigDoesNotOverwriteExistingOrkestra(t *testing.T) {
 	}
 	merged := MergeConfig(existing, "ws-1", "/orkestra")
 
-	// Should NOT be overwritten by the default orkestra server.
+	// Should be overwritten to ensure correct workspace binding.
 	ork := merged.MCPServers["orkestra"]
-	if ork.Command != "/custom/orkestra" {
-		t.Errorf("orkestra command = %q, want /custom/orkestra (should not overwrite)", ork.Command)
+	if ork.Command != "/orkestra" {
+		t.Errorf("orkestra command = %q, want /orkestra (should overwrite)", ork.Command)
+	}
+	if ork.Args[2] != "ws-1" {
+		t.Errorf("orkestra workspace = %q, want ws-1", ork.Args[2])
 	}
 	if len(merged.MCPServers) != 1 {
-		t.Errorf("expected 1 server (existing orkestra only), got %d", len(merged.MCPServers))
+		t.Errorf("expected 1 server, got %d", len(merged.MCPServers))
 	}
 }
 
