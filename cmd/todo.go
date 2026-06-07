@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/adryanev/orkestra/pkg/state"
@@ -116,8 +117,12 @@ var todoUpdateCmd = &cobra.Command{
 		}
 
 		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			fullID, err := resolveID(todos, id)
+			if err != nil {
+				return nil, err
+			}
 			for i, t := range todos {
-				if t.ID == id {
+				if t.ID == fullID {
 					if title != "" {
 						todos[i].Title = title
 					}
@@ -148,8 +153,12 @@ var todoDeleteCmd = &cobra.Command{
 		}
 
 		if err := mutateTodos(func(todos []Todo) ([]Todo, error) {
+			fullID, err := resolveID(todos, id)
+			if err != nil {
+				return nil, err
+			}
 			for i, t := range todos {
-				if t.ID == id {
+				if t.ID == fullID {
 					return append(todos[:i], todos[i+1:]...), nil
 				}
 			}
@@ -159,6 +168,29 @@ var todoDeleteCmd = &cobra.Command{
 		}
 		emitResult("Todo deleted", map[string]string{"id": id, "status": "deleted"})
 	},
+}
+
+// resolveID matches a todo by exact ID, then by unique prefix.
+func resolveID(todos []Todo, id string) (string, error) {
+	for _, t := range todos {
+		if t.ID == id {
+			return t.ID, nil
+		}
+	}
+	var matches []string
+	for _, t := range todos {
+		if strings.HasPrefix(t.ID, id) {
+			matches = append(matches, t.ID)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("todo %s not found", id)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("multiple todos match prefix %q, use a longer prefix", id)
+	}
 }
 
 func loadTodos() ([]Todo, error) {

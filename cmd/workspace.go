@@ -12,6 +12,7 @@ var (
 	workspaceName        string
 	workspaceBranch      string
 	workspaceGhProfile   string
+	workspaceBaseBranch  string
 	workspaceRemoveID    string
 	workspaceRemoveForce bool
 )
@@ -28,7 +29,7 @@ var workspaceCreateCmd = &cobra.Command{
 		if workspaceRepo == "" {
 			emitError(fmt.Errorf("--repo is required"))
 		}
-		ws, err := wm.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile)
+		ws, err := wm.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile, workspaceBaseBranch)
 		if err != nil {
 			emitError(err)
 		}
@@ -104,6 +105,7 @@ func init() {
 	workspaceCreateCmd.Flags().StringVar(&workspaceName, "name", "", "Workspace name")
 	workspaceCreateCmd.Flags().StringVar(&workspaceBranch, "branch", "", "Branch name (optional)")
 	workspaceCreateCmd.Flags().StringVar(&workspaceGhProfile, "gh-profile", "", "GitHub auth profile")
+	workspaceCreateCmd.Flags().StringVar(&workspaceBaseBranch, "base-branch", "", "Base branch to create worktree from (default: auto-detect origin/HEAD)")
 
 	workspaceRemoveCmd.Flags().StringVar(&workspaceRemoveID, "id", "", "Workspace ID")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "Force removal of a dirty worktree or a workspace with a running agent")

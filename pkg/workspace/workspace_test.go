@@ -98,7 +98,7 @@ func TestCreateWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws, err := m.CreateWorkspace("Fix Auth", repo, "", "")
+	ws, err := m.CreateWorkspace("Fix Auth", repo, "", "", "")
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestCreateWorkspaceRejectsNonRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.CreateWorkspace("x", t.TempDir(), "b", ""); err == nil {
+	if _, err := m.CreateWorkspace("x", t.TempDir(), "b", "", ""); err == nil {
 		t.Error("expected error for non-git repo path, got nil")
 	}
 }
@@ -131,7 +131,7 @@ func TestRemoveWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, err := m.CreateWorkspace("Cleanup", repo, "", "")
+	ws, err := m.CreateWorkspace("Cleanup", repo, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestRemoveWorkspaceDirtyRequiresForce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws, err := m.CreateWorkspace("Dirty", repo, "", "")
+	ws, err := m.CreateWorkspace("Dirty", repo, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
