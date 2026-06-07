@@ -75,8 +75,9 @@ Written atomically by the MCP tool. Deleted by `orkestra resume --answer`.
 }
 ```
 
-- `options` empty array or omitted → Hermes renders a free-text Telegram prompt instead of buttons.
+- `options` empty array or omitted → Hermes renders a free-text prompt instead of buttons.
 - `session_id` lets `orkestra resume --answer` verify it is resuming the correct session.
+- **Platform-agnostic**: Orkestra does not store platform-specific fields (Telegram `message_id`, Discord `channel_id`, etc.). Hermes maintains platform context in its own state.
 
 ### `~/.orkestra/answers/<workspace-id>.json`
 
@@ -253,7 +254,7 @@ func (r *Runner) ConfigDir() string {
 
 ## Hermes contract (pull interface)
 
-Orkestra makes no assumptions about Hermes. The contract is purely file-based:
+Orkestra makes no assumptions about Hermes. The contract is purely file-based and **platform-agnostic**.
 
 | File | Written by | Deleted by | Purpose |
 |---|---|---|---|
@@ -262,15 +263,26 @@ Orkestra makes no assumptions about Hermes. The contract is purely file-based:
 
 **Hermes responsibilities:**
 
-1. Poll `~/.orkestra/pending/` on a short interval (5–15 s is fine; Telegram UX is async)
-2. On new file: parse question + options
-   - Options present → send Telegram inline keyboard message, **single column** (one button per row), max 5–6 visible
-   - No options → send Telegram text prompt; enable reply-threading (track `message_id`)
-3. Accept only replies to the specific question `message_id` for free-text answers (prevents stale/mis-routed responses)
-4. Question expires after **24 hours** with no reply (Hermes responsibility to enforce)
-5. On user response: call `orkestra resume --workspace <id> --agent claude --answer "<selected text>"`
+1. Poll `~/.orkestra/pending/` on a short interval (5–15 s is fine; async UX)
+2. On new file: parse question + options, determine target platform (Telegram, Discord, etc.)
+3. Send platform-native message:
+   - **Telegram**: inline keyboard (single column) for choices, reply-threading for free-form
+   - **Discord**: select menu or reaction buttons for choices, thread reply for free-form
+   - **Other platforms**: use native interaction patterns (buttons, menus, reactions, etc.)
+4. Store platform-specific context in Hermes state (`message_id`, `channel_id`, `guild_id`, etc.)
+5. Accept only platform-appropriate responses (reply to specific message, button click, etc.)
+6. Question expires after **24 hours** with no reply (Hermes enforces per-platform)
+7. On user response: call `orkestra resume --workspace <id> --agent <agent> --answer "<selected text>"`
 
-Hermes stores `message_id` → `workspace_id` mapping in its own state. Orkestra's pending file has no Telegram fields.
+**Platform-specific UX patterns:**
+
+| Platform | Choices | Free-form |
+|----------|---------|-----------|
+| Telegram | Inline keyboard (single column, one button per row) | Reply-threaded to message_id |
+| Discord | Select menu or reaction buttons (✅❌ for yes/no) | Thread reply or DM reply |
+| Future | Platform-native buttons/menus | Platform-native text input |
+
+Hermes stores platform context (`message_id`, `channel_id`, etc.) in its own state. Orkestra's pending file has **no platform fields** — it is purely question + options.
 
 ## Error cases
 
