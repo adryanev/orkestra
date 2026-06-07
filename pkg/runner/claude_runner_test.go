@@ -89,7 +89,7 @@ func TestResolveBinary(t *testing.T) {
 }
 
 func TestBuildAgentArgsClaudeFresh(t *testing.T) {
-	name, args, err := buildAgentArgs(Claude, "do it", "", "", "")
+	name, args, err := buildAgentArgs(Claude, "do it", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestBuildAgentArgsClaudeFresh(t *testing.T) {
 }
 
 func TestBuildAgentArgsClaudeMCPConfig(t *testing.T) {
-	_, args, err := buildAgentArgs(Claude, "go", "", "", "/cfg/ws.json")
+	_, args, err := buildAgentArgs(Claude, "go", "", "", "/cfg/ws.json", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestBuildAgentArgsClaudeMCPConfig(t *testing.T) {
 }
 
 func TestBuildAgentArgsClaudeResume(t *testing.T) {
-	_, args, err := buildAgentArgs(Claude, "continue", "sess-123", "", "")
+	_, args, err := buildAgentArgs(Claude, "continue", "sess-123", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestBuildAgentArgsClaudeResume(t *testing.T) {
 }
 
 func TestBuildAgentArgsCodexResume(t *testing.T) {
-	_, args, err := buildAgentArgs(Codex, "continue", "", "thread-abc", "")
+	_, args, err := buildAgentArgs(Codex, "continue", "", "thread-abc", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestBuildAgentArgsCodexResume(t *testing.T) {
 }
 
 func TestBuildAgentArgsCodexFresh(t *testing.T) {
-	_, args, err := buildAgentArgs(Codex, "go", "", "", "")
+	_, args, err := buildAgentArgs(Codex, "go", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestBuildAgentArgsCodexFresh(t *testing.T) {
 }
 
 func TestBuildAgentArgsUnsupported(t *testing.T) {
-	if _, _, err := buildAgentArgs(AgentType("gemini"), "x", "", "", ""); err == nil {
+	if _, _, err := buildAgentArgs(AgentType("gemini"), "x", "", "", "", ""); err == nil {
 		t.Error("expected error for unsupported agent")
 	}
 }
@@ -182,7 +182,7 @@ func TestRunResumeRejectsMismatchedSavedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := r.Run(id, Claude, "continue", true, false, false)
+	_, err := r.Run(id, Claude, "continue", true, false, false, "")
 	if err == nil || !strings.Contains(err.Error(), "saved session is for codex") {
 		t.Fatalf("expected wrong-agent resume error, got %v", err)
 	}
@@ -194,7 +194,7 @@ func TestRunResumeRequiresAgentSpecificID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := r.Run(id, Codex, "continue", true, false, false)
+	_, err := r.Run(id, Codex, "continue", true, false, false, "")
 	if err == nil || !strings.Contains(err.Error(), "no Codex thread_id") {
 		t.Fatalf("expected missing thread id error, got %v", err)
 	}

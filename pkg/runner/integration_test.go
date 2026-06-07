@@ -61,7 +61,7 @@ func TestRunCapturesSessionAndClearsProcess(t *testing.T) {
 	r := NewRunner(m)
 	r.binOverride = fake
 
-	si, err := r.Run(id, Claude, "do it", false, false, true)
+	si, err := r.Run(id, Claude, "do it", false, false, true, "")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestRunCanSuppressRenderedOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = writeEnd
-	si, runErr := runner.Run(id, Claude, "do it", false, false, false)
+	si, runErr := runner.Run(id, Claude, "do it", false, false, false, "")
 	_ = writeEnd.Close()
 	os.Stdout = oldStdout
 	out, readErr := io.ReadAll(readEnd)
@@ -170,7 +170,7 @@ func TestRunFailsWhenProcessStateCannotBePersisted(t *testing.T) {
 
 	runner := NewRunner(m)
 	runner.binOverride = fake
-	_, err := runner.Run(id, Claude, "do it", false, false, false)
+	_, err := runner.Run(id, Claude, "do it", false, false, false, "")
 	if err == nil || !strings.Contains(err.Error(), "failed to persist agent process") {
 		t.Fatalf("expected process persistence error, got %v", err)
 	}

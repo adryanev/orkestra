@@ -11,6 +11,7 @@ var (
 	runWorkspace string
 	runPrompt    string
 	runAgent     string
+	runModel     string
 	runStream    bool
 )
 
@@ -42,7 +43,7 @@ var runCmd = &cobra.Command{
 			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", runAgent))
 		}
 
-		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream, !jsonOutput)
+		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream, !jsonOutput, runModel)
 		if err != nil {
 			emitError(err)
 		}
@@ -88,5 +89,6 @@ func init() {
 	runCmd.Flags().StringVar(&runWorkspace, "workspace", "", "Workspace ID")
 	runCmd.Flags().StringVar(&runPrompt, "prompt", "", "Prompt text")
 	runCmd.Flags().StringVar(&runAgent, "agent", "claude", "Agent type (claude or codex)")
+	runCmd.Flags().StringVar(&runModel, "model", "", "Model to use (e.g., claude-sonnet-4-5, gpt-5-codex-spark)")
 	runCmd.Flags().BoolVar(&runStream, "stream", false, "Output raw NDJSON/JSONL instead of parsed text")
 }

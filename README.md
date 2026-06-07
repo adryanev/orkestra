@@ -134,9 +134,22 @@ orkestra run \
   --agent claude \
   --prompt "Fix the auth middleware"
 
+# Run with a specific model.
+orkestra run \
+  --workspace <workspace-id> \
+  --agent claude \
+  --model claude-sonnet-4-5 \
+  --prompt "Fix the auth middleware"
+
 # Continue the saved session.
 orkestra resume \
   --workspace <workspace-id> \
+  --prompt "Continue with tests"
+
+# Resume with a different model.
+orkestra resume \
+  --workspace <workspace-id> \
+  --model claude-opus-4-8 \
   --prompt "Continue with tests"
 
 # Stop the running agent process for the workspace.
@@ -162,6 +175,16 @@ orkestra run --workspace <workspace-id> --agent codex --prompt "Fix the failing 
 | `orkestra stop` | Stops the persisted agent process for a workspace |
 | `orkestra todo ...` | Creates, lists, updates, and deletes todos |
 | `orkestra mcp --workspace <workspace-id>` | Starts the stdio MCP server for one workspace |
+
+### Run/Resume Flags
+
+| Flag | Purpose |
+|---|---|
+| `--workspace` | Workspace ID (required) |
+| `--agent` | Agent type: `claude` or `codex` (default: `claude`) |
+| `--model` | AI model to use (e.g., `claude-sonnet-4-5`, `claude-opus-4-8`, `gpt-5-codex-spark`) |
+| `--prompt` | Prompt text (required) |
+| `--stream` | Output raw NDJSON/JSONL instead of parsed text |
 
 ## Workspaces
 

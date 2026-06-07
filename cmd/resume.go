@@ -11,6 +11,7 @@ var (
 	resumeWorkspace string
 	resumePrompt    string
 	resumeAgent     string
+	resumeModel     string
 )
 
 var resumeCmd = &cobra.Command{
@@ -38,7 +39,7 @@ var resumeCmd = &cobra.Command{
 			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", resumeAgent))
 		}
 
-		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput)
+		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput, resumeModel)
 		if err != nil {
 			emitError(err)
 		}
@@ -50,4 +51,5 @@ func init() {
 	resumeCmd.Flags().StringVar(&resumeWorkspace, "workspace", "", "Workspace ID")
 	resumeCmd.Flags().StringVar(&resumePrompt, "prompt", "", "Prompt text")
 	resumeCmd.Flags().StringVar(&resumeAgent, "agent", "claude", "Agent type (claude or codex)")
+	resumeCmd.Flags().StringVar(&resumeModel, "model", "", "Model to use (overrides saved model)")
 }
