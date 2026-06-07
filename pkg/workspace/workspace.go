@@ -34,6 +34,7 @@ type Workspace struct {
 	RepoPath     string `json:"repo_path"`
 	WorktreePath string `json:"worktree_path"`
 	Branch       string `json:"branch"`
+	BaseBranch   string `json:"base_branch,omitempty"`
 	Status       string `json:"status"` // e.g., "active", "inactive", "error"
 	GhProfile    string `json:"gh_profile,omitempty"`
 }
@@ -193,7 +194,7 @@ func (m *Manager) saveLocked() error {
 	return nil
 }
 
-func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Workspace, error) {
+func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile, baseBranch string) (*Workspace, error) {
 	if repoPath == "" {
 		return nil, fmt.Errorf("repo path is required")
 	}
@@ -203,11 +204,16 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 
 	id := uuid.New().String()
 
-	// Detect the default branch of the target repository (origin/HEAD ->
-	// origin/main -> origin/master). All git commands run inside repoPath.
-	defaultBranch, err := detectDefaultBranch(repoPath)
-	if err != nil {
-		return nil, err
+	// Resolve the upstream branch to check out the worktree from. When the
+	// caller supplies --base-branch, use it directly; otherwise auto-detect
+	// (origin/HEAD → origin/main → origin/master).
+	startPoint := strings.TrimPrefix(baseBranch, "origin/")
+	if startPoint == "" {
+		detected, err := detectDefaultBranch(repoPath)
+		if err != nil {
+			return nil, err
+		}
+		startPoint = detected
 	}
 
 	// Generate a valid branch name when none was supplied; an empty value
@@ -216,7 +222,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 		branch = defaultWorkspaceBranch(name, id)
 	}
 
-	// Create worktree from origin/<defaultBranch>.
+	// Create worktree from origin/<startPoint>.
 	worktreePath := filepath.Join(m.configDir, "worktrees", id)
 	if err := os.MkdirAll(filepath.Join(m.configDir, "worktrees"), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create worktrees directory: %w", err)
@@ -224,7 +230,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 
 	ctx, cancel := context.WithTimeout(context.Background(), gitWorktreeTimeout)
 	defer cancel()
-	addCmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branch, worktreePath, "origin/"+defaultBranch)
+	addCmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branch, worktreePath, "origin/"+startPoint)
 	addCmd.Dir = repoPath
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w: %s", err, strings.TrimSpace(string(out)))
@@ -236,6 +242,7 @@ func (m *Manager) CreateWorkspace(name, repoPath, branch, ghProfile string) (*Wo
 		RepoPath:     repoPath,
 		WorktreePath: worktreePath,
 		Branch:       branch,
+		BaseBranch:   startPoint,
 		Status:       "active",
 		GhProfile:    ghProfile,
 	}
