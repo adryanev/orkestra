@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ type AnswerRecord struct {
 // or ".." segments that could be used for path traversal attacks.
 func validateWorkspaceID(id string) error {
 	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
-		return fmt.Errorf("invalid workspace id %q: contains path separators or ..", id)
+		return fmt.Errorf("invalid workspace id %q: contains path separators or \"..\"", id)
 	}
 	return nil
 }
@@ -79,7 +80,7 @@ func LockPending(configDir, workspaceID string) (*state.FileLock, error) {
 // WritePending atomically writes a pending question to disk under an advisory
 // lock. Returns an error if a pending file already exists for this workspace
 // (R4 — only one pending question allowed at a time).
-func WritePending(configDir, workspaceID string, q PendingQuestion) error {
+func WritePending(configDir, workspaceID string, q PendingQuestion) (err error) {
 	path, err := pendingPath(configDir, workspaceID)
 	if err != nil {
 		return err
@@ -89,14 +90,22 @@ func WritePending(configDir, workspaceID string, q PendingQuestion) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("release pending lock: %w", releaseErr))
+		}
+	}()
 
 	// R4: reject if pending file already exists (checked under lock to prevent TOCTOU)
-	if data, _ := state.ReadFile(path); data != nil {
+	data, err := state.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading pending file for workspace %s: %w", workspaceID, err)
+	}
+	if data != nil {
 		return fmt.Errorf("pending question already exists for workspace %s", workspaceID)
 	}
 
-	data, err := json.MarshalIndent(q, "", "  ")
+	data, err = json.MarshalIndent(q, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal pending question: %w", err)
 	}

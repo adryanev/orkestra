@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -23,7 +24,7 @@ var (
 func ensureAnswerResumeHasNoLiveAgent(workspaceID string) error {
 	session, err := wm.GetSession(workspaceID)
 	if err != nil {
-		return nil
+		return fmt.Errorf("get session for workspace %s: %w", workspaceID, err)
 	}
 	if session.PID > 0 && process.IdentityMatches(session.PID, session.PGID, session.StartedAt) {
 		return fmt.Errorf("workspace %s has a running agent; stop it first", workspaceID)
@@ -86,7 +87,7 @@ the synthesized answer context.`,
 			}
 
 			var pending *mcp.PendingQuestion
-			if err := func() error {
+			if err := func() (err error) {
 				// Keep the pending lock scoped only to the read/audit/delete
 				// transaction. The resumed agent run must not execute while
 				// this lock is held, or other workspace operations block.
@@ -94,7 +95,11 @@ the synthesized answer context.`,
 				if err != nil {
 					return fmt.Errorf("failed to acquire pending lock: %w", err)
 				}
-				defer func() { _ = lock.Release() }()
+				defer func() {
+					if releaseErr := lock.Release(); releaseErr != nil {
+						err = errors.Join(err, fmt.Errorf("release pending lock: %w", releaseErr))
+					}
+				}()
 
 				pending, err = mcp.ReadPending(configDir, resumeWorkspace)
 				if err != nil {
@@ -134,6 +139,7 @@ the synthesized answer context.`,
 			// Normal resume (no --answer)
 			if resumePrompt == "" && len(args) == 0 {
 				emitError(fmt.Errorf("prompt required (--prompt or argument)"))
+				return
 			}
 			prompt = resumePrompt
 			if prompt == "" {
@@ -149,6 +155,7 @@ the synthesized answer context.`,
 			a = runner.Codex
 		default:
 			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", resumeAgent))
+			return
 		}
 
 		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput, resumeModel, resumeEffort)

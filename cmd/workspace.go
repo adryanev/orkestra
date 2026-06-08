@@ -130,11 +130,11 @@ and continue the suspended agent.`,
 		}
 
 		type pendingEntry struct {
-			WorkspaceID string `json:"workspace_id"`
-			Name        string `json:"name,omitempty"`
-			Question    string `json:"question"`
+			WorkspaceID string   `json:"workspace_id"`
+			Name        string   `json:"name,omitempty"`
+			Question    string   `json:"question"`
 			Options     []string `json:"options,omitempty"`
-			AskedAt     string `json:"asked_at"`
+			AskedAt     string   `json:"asked_at"`
 		}
 
 		var entries []pendingEntry
@@ -169,7 +169,11 @@ and continue the suspended agent.`,
 			return
 		}
 		for _, e := range entries {
-			fmt.Printf("  %s | %s | %s | %s\n", e.WorkspaceID[:8], e.Name, e.AskedAt, e.Question)
+			displayID := e.WorkspaceID
+			if len(displayID) > 8 {
+				displayID = displayID[:8]
+			}
+			fmt.Printf("  %s | %s | %s | %s\n", displayID, e.Name, e.AskedAt, e.Question)
 			if len(e.Options) > 0 {
 				fmt.Printf("    Options: %s\n", strings.Join(e.Options, ", "))
 			}

@@ -27,7 +27,7 @@ var (
 func getLock(lockPath string) *sync.Mutex {
 	mapMu.Lock()
 	defer mapMu.Unlock()
-	
+
 	if lock, exists := lockMap[lockPath]; exists {
 		return lock
 	}
@@ -42,18 +42,18 @@ func Acquire(lockPath string) (*FileLock, error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
 		return nil, err
 	}
-	
+
 	// Create the lock file if it doesn't exist
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
 	f.Close()
-	
+
 	// Acquire the mutex
 	lock := getLock(lockPath)
 	lock.Lock()
-	
+
 	return &FileLock{}, nil
 }
 
