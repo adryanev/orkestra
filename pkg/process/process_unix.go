@@ -40,6 +40,14 @@ func SysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
 }
 
+// PGID returns the current process-group id for pid.
+func PGID(pid int) (int, error) {
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid pid %d", pid)
+	}
+	return syscall.Getpgid(pid)
+}
+
 // Alive reports whether a process with pid currently exists. Signal 0 performs
 // existence/permission checking without delivering a signal; EPERM means the
 // process exists but is owned by another user, which still counts as alive.

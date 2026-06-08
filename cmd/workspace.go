@@ -32,7 +32,7 @@ var workspaceCreateCmd = &cobra.Command{
 		if workspaceRepo == "" {
 			emitError(fmt.Errorf("--repo is required"))
 		}
-		ws, err := wm.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile, workspaceBaseBranch)
+		ws, err := workspaceManager.CreateWorkspace(workspaceName, workspaceRepo, workspaceBranch, workspaceGhProfile, workspaceBaseBranch)
 		if err != nil {
 			emitError(err)
 		}
@@ -48,7 +48,7 @@ var workspaceListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all workspaces",
 	Run: func(cmd *cobra.Command, args []string) {
-		workspaces, err := wm.ListWorkspaces()
+		workspaces, err := workspaceManager.ListWorkspaces()
 		if err != nil {
 			emitError(err)
 		}
@@ -87,9 +87,12 @@ var workspaceRemoveCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to remove workspace %s and its worktree? [y/N] ", workspaceRemoveID)
 			scanner := bufio.NewScanner(cmd.InOrStdin())
 			scanner.Scan()
+			if err := scanner.Err(); err != nil {
+				emitError(fmt.Errorf("read confirmation: %w", err))
+			}
 			if answer := strings.TrimSpace(scanner.Text()); answer != "y" && answer != "Y" {
 				fmt.Fprintln(cmd.OutOrStdout(), "Cancelled")
-				return
+				emitError(fmt.Errorf("workspace removal cancelled"))
 			}
 		}
 
@@ -104,7 +107,7 @@ var workspaceRemoveCmd = &cobra.Command{
 			}
 		}
 
-		if err := wm.RemoveWorkspace(workspaceRemoveID, workspaceRemoveForce); err != nil {
+		if err := workspaceManager.RemoveWorkspace(workspaceRemoveID, workspaceRemoveForce); err != nil {
 			emitError(err)
 		}
 		emitResult(
@@ -123,7 +126,7 @@ Use 'orkestra resume --workspace <id> --answer <text>' to deliver an answer
 and continue the suspended agent.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		configDir := getConfigDir()
-		workspaces, err := wm.ListWorkspaces()
+		workspaces, err := workspaceManager.ListWorkspaces()
 		if err != nil {
 			emitError(fmt.Errorf("failed to list workspaces: %w", err))
 			return

@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/adryanev/orkestra/pkg/mcp"
 	"github.com/adryanev/orkestra/pkg/process"
+	"github.com/adryanev/orkestra/pkg/pty"
 	"github.com/adryanev/orkestra/pkg/runner"
 	"github.com/spf13/cobra"
 )
@@ -22,7 +25,7 @@ var (
 )
 
 func ensureAnswerResumeHasNoLiveAgent(workspaceID string) error {
-	session, err := wm.GetSession(workspaceID)
+	session, err := workspaceManager.GetSession(workspaceID)
 	if err != nil {
 		return fmt.Errorf("get session for workspace %s: %w", workspaceID, err)
 	}
@@ -71,7 +74,7 @@ the synthesized answer context.`,
 		}
 
 		// Validate workspace exists in registry before any I/O
-		if _, err := wm.GetWorkspace(resumeWorkspace); err != nil {
+		if _, err := workspaceManager.GetWorkspace(resumeWorkspace); err != nil {
 			emitError(fmt.Errorf("workspace %q not found: %w", resumeWorkspace, err))
 			return
 		}
@@ -135,16 +138,6 @@ the synthesized answer context.`,
 			if resumePrompt != "" {
 				prompt = prompt + "\n\n" + resumePrompt
 			}
-		} else {
-			// Normal resume (no --answer)
-			if resumePrompt == "" && len(args) == 0 {
-				emitError(fmt.Errorf("prompt required (--prompt or argument)"))
-				return
-			}
-			prompt = resumePrompt
-			if prompt == "" {
-				prompt = args[0]
-			}
 		}
 
 		var a runner.AgentType
@@ -156,6 +149,48 @@ the synthesized answer context.`,
 		default:
 			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", resumeAgent))
 			return
+		}
+
+		// Check if this is a PTY session and handle re-attach or restart.
+		session, err := workspaceManager.GetSession(resumeWorkspace)
+		if err == nil && session.PTY != nil {
+			socketPath := session.PTY.SocketPath
+			// Check if daemon is still alive by validating identity and socket.
+			daemonAlive := false
+			if process.IdentityMatches(session.PTY.DaemonPID, session.PTY.DaemonPGID, session.PTY.DaemonStart) {
+				if _, statErr := os.Stat(socketPath); statErr == nil {
+					daemonAlive = true
+				}
+			}
+
+			if daemonAlive {
+				// Daemon is alive: re-attach to the running session.
+				ctx := context.Background()
+				if err := pty.RunAttach(ctx, socketPath, int(os.Stdin.Fd()), os.Stdout); err != nil {
+					emitError(fmt.Errorf("failed to attach to PTY session: %w", err))
+				}
+				if !jsonOutput {
+					fmt.Fprintln(os.Stderr, "\n[Detached from PTY session]")
+				}
+				return
+			}
+
+			// Daemon is dead: clear stale PTY session and start a new PTY run.
+			if clearErr := workspaceManager.ClearPTYSession(resumeWorkspace); clearErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to clear stale PTY session: %v\n", clearErr)
+			}
+			// Fall through to normal resume (which will start a new PTY run if --pty was set).
+		}
+
+		if resumeAnswer == "" {
+			if resumePrompt == "" && len(args) == 0 {
+				emitError(fmt.Errorf("prompt required (--prompt or argument)"))
+				return
+			}
+			prompt = resumePrompt
+			if prompt == "" {
+				prompt = args[0]
+			}
 		}
 
 		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput, resumeModel, resumeEffort)

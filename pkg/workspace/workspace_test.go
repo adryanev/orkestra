@@ -280,3 +280,224 @@ func TestSessionProcessLifecycle(t *testing.T) {
 		t.Errorf("clearing missing session should be a no-op, got %v", err)
 	}
 }
+
+// TestSetPTYSession verifies that SetPTYSession persists PTY daemon state,
+// preserves existing SessionID/ThreadID, and survives reload.
+func TestSetPTYSession(t *testing.T) {
+	cfg := t.TempDir()
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up a session with SessionID and Agent.
+	if err := m.AddSession(Session{
+		WorkspaceID: "ws1",
+		Agent:       "claude",
+		SessionID:   "sid-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add PTY state.
+	pty := PTYSession{
+		SocketPath:  "/tmp/pty.sock",
+		DaemonPID:   5000,
+		DaemonPGID:  5000,
+		DaemonStart: 12345,
+		Rows:        24,
+		Cols:        80,
+	}
+	if err := m.SetPTYSession("ws1", pty); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify in-memory state.
+	s, err := m.GetSession("ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PTY == nil {
+		t.Fatal("PTY should be set")
+	}
+	if s.PTY.SocketPath != "/tmp/pty.sock" || s.PTY.DaemonPID != 5000 {
+		t.Errorf("PTY fields incorrect: %+v", s.PTY)
+	}
+	if s.SessionID != "sid-1" || s.Agent != "claude" {
+		t.Errorf("existing fields clobbered: SessionID=%q, Agent=%q", s.SessionID, s.Agent)
+	}
+
+	// Reload from disk and verify persistence.
+	reloaded, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err = reloaded.GetSession("ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PTY == nil {
+		t.Fatal("PTY should survive reload")
+	}
+	if s.PTY.Rows != 24 || s.PTY.Cols != 80 {
+		t.Errorf("terminal size not persisted: rows=%d, cols=%d", s.PTY.Rows, s.PTY.Cols)
+	}
+	if s.SessionID != "sid-1" {
+		t.Errorf("SessionID lost after reload: %q", s.SessionID)
+	}
+}
+
+// TestClearPTYSession verifies that clearing PTY state preserves SessionID/ThreadID.
+func TestClearPTYSession(t *testing.T) {
+	cfg := t.TempDir()
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up session with both PTY and SessionID.
+	if err := m.AddSession(Session{
+		WorkspaceID: "ws1",
+		Agent:       "claude",
+		SessionID:   "sid-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetPTYSession("ws1", PTYSession{
+		SocketPath:  "/tmp/pty.sock",
+		DaemonPID:   5000,
+		DaemonPGID:  5000,
+		DaemonStart: 12345,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear PTY.
+	if err := m.ClearPTYSession("ws1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify PTY is nil but SessionID/Agent remain.
+	s, err := m.GetSession("ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PTY != nil {
+		t.Error("PTY should be nil after clear")
+	}
+	if s.SessionID != "sid-1" || s.Agent != "claude" {
+		t.Errorf("SessionID/Agent should survive clear: SessionID=%q, Agent=%q", s.SessionID, s.Agent)
+	}
+
+	// Clearing a missing workspace should not error.
+	if err := m.ClearPTYSession("nope"); err != nil {
+		t.Errorf("clearing missing PTY session should be a no-op, got %v", err)
+	}
+}
+
+// TestPTYSessionConcurrent verifies that concurrent SetPTYSession calls serialize
+// correctly under the mutate lock and the last write wins.
+func TestPTYSessionConcurrent(t *testing.T) {
+	cfg := t.TempDir()
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Launch 10 goroutines writing different PIDs.
+	done := make(chan int, 10)
+	for i := 0; i < 10; i++ {
+		pid := 5000 + i
+		go func(p int) {
+			err := m.SetPTYSession("ws1", PTYSession{
+				SocketPath:  "/tmp/pty.sock",
+				DaemonPID:   p,
+				DaemonPGID:  p,
+				DaemonStart: 12345,
+			})
+			if err != nil {
+				t.Errorf("SetPTYSession failed: %v", err)
+			}
+			done <- p
+		}(pid)
+	}
+
+	// Wait for all writes.
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	// Verify the session has one of the written PIDs (last write won).
+	s, err := m.GetSession("ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PTY == nil {
+		t.Fatal("PTY should be set")
+	}
+	if s.PTY.DaemonPID < 5000 || s.PTY.DaemonPID >= 5010 {
+		t.Errorf("DaemonPID out of range: %d", s.PTY.DaemonPID)
+	}
+
+	// Reload and verify atomicity (the state on disk should be consistent).
+	reloaded, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err = reloaded.GetSession("ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PTY == nil || s.PTY.DaemonPID < 5000 {
+		t.Errorf("reloaded state inconsistent: %+v", s.PTY)
+	}
+}
+
+// TestPTYSessionBackwardCompat verifies that loading a sessions.json without the
+// pty field does not error and treats PTY as nil.
+func TestPTYSessionBackwardCompat(t *testing.T) {
+	cfg := t.TempDir()
+	sessionsPath := filepath.Join(cfg, SessionsFile)
+
+	// Write a session without the pty field (old format).
+	oldJSON := `{
+  "ws1": {
+    "workspace_id": "ws1",
+    "agent": "claude",
+    "session_id": "sid-1"
+  }
+}`
+	if err := os.WriteFile(sessionsPath, []byte(oldJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load and verify PTY is nil.
+	m, err := NewManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := m.GetSession("ws1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PTY != nil {
+		t.Error("PTY should be nil when loading old sessions.json without pty field")
+	}
+	if s.SessionID != "sid-1" {
+		t.Errorf("SessionID = %q, want sid-1", s.SessionID)
+	}
+
+	// Add PTY state and verify it persists.
+	if err := m.SetPTYSession("ws1", PTYSession{
+		SocketPath:  "/tmp/pty.sock",
+		DaemonPID:   6000,
+		DaemonPGID:  6000,
+		DaemonStart: 99999,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, _ = m.GetSession("ws1")
+	if s.PTY == nil || s.PTY.DaemonPID != 6000 {
+		t.Error("PTY should be set after upgrade")
+	}
+}

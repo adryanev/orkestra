@@ -13,11 +13,11 @@ import (
 )
 
 var (
-	cfgFile     string
-	configDir   string
-	jsonOutput  bool
-	wm          *workspace.Manager
-	agentRunner *runner.Runner
+	cfgFile          string
+	configDir        string
+	jsonOutput       bool
+	workspaceManager *workspace.Manager
+	agentRunner      *runner.Runner
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -31,12 +31,12 @@ running agents, and interacting with them via the MCP protocol.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		initConfig()
 		var err error
-		wm, err = workspace.NewManager(configDir)
+		workspaceManager, err = workspace.NewManager(configDir)
 		if err != nil {
 			return fmt.Errorf("failed to initialize workspace manager: %w", err)
 		}
 
-		agentRunner = runner.NewRunner(wm)
+		agentRunner = runner.NewRunner(workspaceManager)
 
 		return nil
 	},
@@ -62,6 +62,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(resumeCmd)
 	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(attachCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(todoCmd)
 	rootCmd.AddCommand(modelsCmd)

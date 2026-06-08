@@ -14,6 +14,7 @@ var (
 	runModel     string
 	runEffort    string
 	runStream    bool
+	runPTY       bool
 )
 
 var runCmd = &cobra.Command{
@@ -42,6 +43,12 @@ var runCmd = &cobra.Command{
 			agent = runner.Codex
 		default:
 			emitError(fmt.Errorf("invalid --agent %q (expected claude or codex)", runAgent))
+		}
+
+		// PTY mode: spawn daemon, poll socket, exit with attach instructions.
+		if runPTY {
+			runPTYMode(runWorkspace, agent, prompt, runModel, runEffort)
+			return
 		}
 
 		sessionInfo, err := agentRunner.Run(runWorkspace, agent, prompt, false, runStream, !jsonOutput, runModel, runEffort)
@@ -93,4 +100,5 @@ func init() {
 	runCmd.Flags().StringVar(&runModel, "model", "", "Model to use (e.g., claude-sonnet-4-5, gpt-5-codex-spark)")
 	runCmd.Flags().StringVar(&runEffort, "effort", "", "Effort level for Claude Code (low, medium, high, xhigh, max)")
 	runCmd.Flags().BoolVar(&runStream, "stream", false, "Output raw NDJSON/JSONL instead of parsed text")
+	runCmd.Flags().BoolVar(&runPTY, "pty", false, "Run agent in PTY mode (persistent terminal session)")
 }

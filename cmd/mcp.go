@@ -29,7 +29,7 @@ var mcpCmd = &cobra.Command{
 		var overrides []mcp.LspServerConfig
 		_ = viper.UnmarshalKey("lsp_servers", &overrides)
 
-		server, err := mcp.NewServer(wm, mcpWorkspace, overrides)
+		server, err := mcp.NewServer(workspaceManager, mcpWorkspace, overrides)
 		if err != nil {
 			emitError(err)
 		}

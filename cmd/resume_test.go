@@ -65,11 +65,11 @@ func TestEnsureAnswerResumeHasNoLiveAgentRejectsRunningProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldWM := wm
-	wm = manager
-	t.Cleanup(func() { wm = oldWM })
+	oldWM := workspaceManager
+	workspaceManager = manager
+	t.Cleanup(func() { workspaceManager = oldWM })
 
-	if err := wm.AddSession(workspace.Session{
+	if err := workspaceManager.AddSession(workspace.Session{
 		WorkspaceID: "ws-live",
 		Agent:       "claude",
 		SessionID:   "sid-live",

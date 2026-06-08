@@ -206,9 +206,9 @@ func (r *Runner) Stop(workspaceID string) error {
 	return nil
 }
 
-// resolveBinary returns the absolute path to the agent binary from the captured
+// ResolveBinary returns the absolute path to the agent binary from the captured
 // shell environment, falling back to the bare command name.
-func resolveBinary(agent AgentType, shell *env.ShellEnv) string {
+func ResolveBinary(agent AgentType, shell *env.ShellEnv) string {
 	if shell != nil {
 		switch agent {
 		case Claude:
@@ -227,10 +227,10 @@ func resolveBinary(agent AgentType, shell *env.ShellEnv) string {
 	return "claude"
 }
 
-// composeEnv builds the child environment: the orkestra process environment,
+// ComposeEnv builds the child environment: the orkestra process environment,
 // overlaid with captured login-shell variables, overlaid with GH_TOKEN. Keys
 // are deduplicated (last writer wins) so the child sees one value per key.
-func composeEnv(shell *env.ShellEnv, token string) []string {
+func ComposeEnv(shell *env.ShellEnv, token string) []string {
 	merged := make(map[string]string)
 	for _, kv := range os.Environ() {
 		if i := strings.IndexByte(kv, '='); i > 0 {
@@ -311,7 +311,7 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	// nvm/fnm/asdf-installed agent would otherwise be "not found".
 	binPath := r.binOverride
 	if binPath == "" {
-		binPath = resolveBinary(agent, shellEnv)
+		binPath = ResolveBinary(agent, shellEnv)
 	}
 
 	// Wire the orkestra MCP server into the agent so it can call back. Claude
@@ -328,7 +328,7 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	}
 	if agent == Codex && orkestraBin != "" {
 		name := mcp.CodexServerName(workspaceID)
-		codexEnv := composeEnv(shellEnv, "")
+		codexEnv := ComposeEnv(shellEnv, "")
 		if err := codexRegisterMCP(binPath, codexEnv, name, orkestraBin, workspaceID); err != nil {
 			return nil, fmt.Errorf("failed to register Codex MCP server: %w", err)
 		} else {
@@ -345,7 +345,7 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	// than a fixed deadline, so it uses exec.Command (no context timeout).
 	cmd := exec.Command(binPath, args...)
 	cmd.Dir = worktreePath
-	cmd.Env = composeEnv(shellEnv, token)
+	cmd.Env = ComposeEnv(shellEnv, token)
 	// Start the agent as its own process-group leader so a separate `stop`
 	// process can terminate it and all of its descendants together.
 	cmd.SysProcAttr = process.SysProcAttr()

@@ -39,6 +39,15 @@ type Workspace struct {
 	GhProfile    string `json:"gh_profile,omitempty"`
 }
 
+type PTYSession struct {
+	SocketPath  string `json:"socket_path"`
+	DaemonPID   int    `json:"daemon_pid"`
+	DaemonPGID  int    `json:"daemon_pgid"`
+	DaemonStart int64  `json:"daemon_start"`
+	Rows        uint16 `json:"rows"`
+	Cols        uint16 `json:"cols"`
+}
+
 type Session struct {
 	WorkspaceID string `json:"workspace_id"`
 	Agent       string `json:"agent"`                // e.g., "claude", "codex"
@@ -51,6 +60,8 @@ type Session struct {
 	PID       int   `json:"pid,omitempty"`
 	PGID      int   `json:"pgid,omitempty"`
 	StartedAt int64 `json:"started_at,omitempty"`
+	// PTY daemon tracking for persistent terminal sessions.
+	PTY *PTYSession `json:"pty,omitempty"`
 }
 
 type Manager struct {
@@ -501,6 +512,32 @@ func (m *Manager) RemoveSession(workspaceID string) error {
 			return fmt.Errorf("session for workspace %s not found", workspaceID)
 		}
 		delete(m.sessions, workspaceID)
+		return nil
+	})
+}
+
+// SetPTYSession records the PTY daemon state for a workspace, creating a session
+// record if none exists and preserving existing SessionID/ThreadID/Agent fields.
+func (m *Manager) SetPTYSession(workspaceID string, pty PTYSession) error {
+	return m.mutate(func() error {
+		s, ok := m.sessions[workspaceID]
+		if !ok {
+			s = &Session{WorkspaceID: workspaceID}
+			m.sessions[workspaceID] = s
+		}
+		s.PTY = &pty
+		return nil
+	})
+}
+
+// ClearPTYSession removes the PTY daemon state from a workspace session, leaving
+// the session/thread id and agent intact. A missing record is not an error so
+// callers can clear unconditionally on PTY daemon exit.
+func (m *Manager) ClearPTYSession(workspaceID string) error {
+	return m.mutate(func() error {
+		if s, ok := m.sessions[workspaceID]; ok {
+			s.PTY = nil
+		}
 		return nil
 	})
 }
