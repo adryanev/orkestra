@@ -76,6 +76,11 @@ func IdentityMatches(pid int, pgid int, startedAt int64) bool {
 	return Alive(pid)
 }
 
+// GroupID returns pid as the group ID on Windows (no process group concept).
+func GroupID(pid int) (int, error) {
+	return pid, nil
+}
+
 // TerminateGroup terminates a process on Windows.
 // Uses taskkill to terminate the process and its children.
 func TerminateGroup(pid int, grace time.Duration) error {

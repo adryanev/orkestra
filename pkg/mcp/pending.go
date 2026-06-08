@@ -32,12 +32,21 @@ type AnswerRecord struct {
 	AnsweredAt  time.Time `json:"answered_at"`
 }
 
+// validateWorkspaceID returns an error if workspaceID contains path separators
+// or ".." segments that could be used for path traversal attacks.
+func validateWorkspaceID(id string) error {
+	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid workspace id %q: contains path separators or ..", id)
+	}
+	return nil
+}
+
 // pendingPath builds the path to the pending-question file for a workspace.
 // It validates that workspaceID contains no path separators or ".." segments
 // to prevent path traversal attacks (same guard as notify.go).
 func pendingPath(configDir, workspaceID string) (string, error) {
-	if strings.ContainsAny(workspaceID, `/\`) || strings.Contains(workspaceID, "..") {
-		return "", fmt.Errorf("invalid workspace id %q: contains path separators or ..", workspaceID)
+	if err := validateWorkspaceID(workspaceID); err != nil {
+		return "", err
 	}
 	return filepath.Join(configDir, "pending", workspaceID+".json"), nil
 }
@@ -45,22 +54,44 @@ func pendingPath(configDir, workspaceID string) (string, error) {
 // answerPath builds the path to the answer audit file for a workspace.
 // It validates that workspaceID contains no path separators or ".." segments.
 func answerPath(configDir, workspaceID string) (string, error) {
-	if strings.ContainsAny(workspaceID, `/\`) || strings.Contains(workspaceID, "..") {
-		return "", fmt.Errorf("invalid workspace id %q: contains path separators or ..", workspaceID)
+	if err := validateWorkspaceID(workspaceID); err != nil {
+		return "", err
 	}
 	return filepath.Join(configDir, "answers", workspaceID+".json"), nil
 }
 
-// WritePending atomically writes a pending question to disk. Returns an error
-// if a pending file already exists for this workspace (R4 — only one pending
-// question allowed at a time).
+// LockPending acquires an exclusive cross-process advisory lock on the pending
+// file for workspaceID. The caller must call Release() on the returned lock.
+// Using the same lock in both WritePending and resume --answer prevents the
+// TOCTOU race (check-then-write) and concurrent double-delivery.
+func LockPending(configDir, workspaceID string) (*state.FileLock, error) {
+	path, err := pendingPath(configDir, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := state.Acquire(path + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("acquire pending lock for workspace %s: %w", workspaceID, err)
+	}
+	return lock, nil
+}
+
+// WritePending atomically writes a pending question to disk under an advisory
+// lock. Returns an error if a pending file already exists for this workspace
+// (R4 — only one pending question allowed at a time).
 func WritePending(configDir, workspaceID string, q PendingQuestion) error {
 	path, err := pendingPath(configDir, workspaceID)
 	if err != nil {
 		return err
 	}
 
-	// R4: reject if pending file already exists
+	lock, err := LockPending(configDir, workspaceID)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	// R4: reject if pending file already exists (checked under lock to prevent TOCTOU)
 	if data, _ := state.ReadFile(path); data != nil {
 		return fmt.Errorf("pending question already exists for workspace %s", workspaceID)
 	}
@@ -70,7 +101,10 @@ func WritePending(configDir, workspaceID string, q PendingQuestion) error {
 		return fmt.Errorf("failed to marshal pending question: %w", err)
 	}
 
-	if err := state.WriteAtomic(path, data, 0644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("failed to create pending dir: %w", err)
+	}
+	if err := state.WriteAtomic(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write pending file: %w", err)
 	}
 	return nil
@@ -141,7 +175,10 @@ func AppendAnswer(configDir, workspaceID string, r AnswerRecord) error {
 		return fmt.Errorf("failed to marshal answer records: %w", err)
 	}
 
-	if err := state.WriteAtomic(path, data, 0644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("failed to create answers dir: %w", err)
+	}
+	if err := state.WriteAtomic(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write answer file: %w", err)
 	}
 	return nil

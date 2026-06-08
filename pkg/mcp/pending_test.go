@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -91,8 +94,13 @@ func TestWritePending_HappyPath(t *testing.T) {
 
 	// Verify file was created
 	path := filepath.Join(configDir, "pending", workspaceID+".json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		t.Errorf("pending file was not created at %s", path)
+	} else if err != nil {
+		t.Fatalf("failed to stat pending file: %v", err)
+	} else if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("pending file mode = %o, want 0600", got)
 	}
 }
 
@@ -119,6 +127,50 @@ func TestWritePending_RejectsDuplicate(t *testing.T) {
 	}
 	if err := WritePending(configDir, workspaceID, q2); err == nil {
 		t.Error("WritePending() should reject duplicate pending file, but got nil error")
+	}
+}
+
+func TestWritePending_ConcurrentRejectsDuplicate(t *testing.T) {
+	configDir := t.TempDir()
+	workspaceID := "test-workspace"
+
+	const callers = 2
+	start := make(chan struct{})
+	results := make(chan error, callers)
+
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results <- WritePending(configDir, workspaceID, PendingQuestion{
+				WorkspaceID: workspaceID,
+				Question:    fmt.Sprintf("Question %d", i),
+				AskedAt:     time.Now().UTC(),
+			})
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	duplicates := 0
+	for err := range results {
+		if err == nil {
+			successes++
+			continue
+		}
+		if strings.Contains(err.Error(), "pending question already exists") {
+			duplicates++
+			continue
+		}
+		t.Fatalf("unexpected WritePending error: %v", err)
+	}
+	if successes != 1 || duplicates != 1 {
+		t.Fatalf("successes=%d duplicates=%d, want 1 success and 1 duplicate rejection", successes, duplicates)
 	}
 }
 
@@ -255,7 +307,7 @@ func TestAppendAnswer_HappyPath(t *testing.T) {
 
 	// Should contain both records (basic smoke test — full parsing tested above)
 	content := string(data)
-	if !contains(content, "First question") || !contains(content, "Second question") {
+	if !strings.Contains(content, "First question") || !strings.Contains(content, "Second question") {
 		t.Errorf("answer file missing expected records: %s", content)
 	}
 }
@@ -285,7 +337,7 @@ func TestAppendAnswer_WithOptions(t *testing.T) {
 	}
 
 	content := string(data)
-	if !contains(content, "option1") || !contains(content, "option2") {
+	if !strings.Contains(content, "option1") || !strings.Contains(content, "option2") {
 		t.Errorf("answer file missing expected options: %s", content)
 	}
 }
@@ -346,19 +398,4 @@ func TestAppendAnswer_InvalidWorkspaceID(t *testing.T) {
 	if err == nil {
 		t.Error("AppendAnswer() with invalid workspace ID should fail")
 	}
-}
-
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && containsHelper(s, substr)))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

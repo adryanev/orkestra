@@ -363,11 +363,19 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 	}
 
 	// Persist the PID/PGID immediately so a concurrent `stop` can find the
-	// agent while it runs. With Setpgid the new group id equals the child PID.
+	// agent while it runs. Capture pgid explicitly from the kernel rather than
+	// assuming pgid == pid (Setpgid guarantees equality today, but reading it
+	// once is both defensive and self-documenting).
 	pid := cmd.Process.Pid
-	startedAt, err := process.StartedAt(pid)
+	pgid, err := process.GroupID(pid)
 	if err != nil {
 		_ = process.TerminateGroup(pid, process.DefaultGrace)
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("failed to get pgid for agent in workspace %s: %w", workspaceID, err)
+	}
+	startedAt, err := process.StartedAt(pid)
+	if err != nil {
+		_ = process.TerminateGroup(pgid, process.DefaultGrace)
 		// A failed identity capture usually means the process already exited
 		// (missing binary, permission error, immediate crash). Surface that
 		// real exit error instead of masking it behind the identity message.
@@ -376,8 +384,8 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 		}
 		return nil, fmt.Errorf("failed to capture agent process identity for workspace %s: %w", workspaceID, err)
 	}
-	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), model, pid, pid, startedAt); err != nil {
-		_ = process.TerminateGroup(pid, process.DefaultGrace)
+	if err := r.workspaceManager.SetSessionProcess(workspaceID, string(agent), model, pid, pgid, startedAt); err != nil {
+		_ = process.TerminateGroup(pgid, process.DefaultGrace)
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("failed to persist agent process for workspace %s: %w", workspaceID, err)
 	}
@@ -391,15 +399,29 @@ func (r *Runner) executeAgent(workspaceID, worktreePath string, agent AgentType,
 		for {
 			time.Sleep(500 * time.Millisecond)
 			// Exit if agent is no longer running (natural exit or killed)
-			if !process.IdentityMatches(pid, pid, startedAt) {
+			if !process.IdentityMatches(pid, pgid, startedAt) {
 				return
 			}
 			// Check for pending question
-			if pending, _ := mcp.ReadPending(configDir, workspaceID); pending != nil {
+			pending, err := mcp.ReadPending(configDir, workspaceID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "suspension watcher: failed to read pending for workspace %s: %v\n", workspaceID, err)
+			}
+			if pending != nil {
 				// Grace period: let MCP response drain
 				time.Sleep(500 * time.Millisecond)
 				// Terminate agent process group
-				_ = process.TerminateGroup(pid, process.DefaultGrace)
+				if err := process.TerminateGroup(pgid, process.DefaultGrace); err != nil {
+					fmt.Fprintf(os.Stderr, "suspension watcher: failed to terminate agent for workspace %s: %v\n", workspaceID, err)
+					return
+				}
+				if err := r.workspaceManager.ClearSessionProcess(workspaceID); err != nil {
+					fmt.Fprintf(os.Stderr, "suspension watcher: failed to clear process state for workspace %s: %v\n", workspaceID, err)
+				}
+				// Mark workspace suspended so resume --answer can verify state
+				if err := r.workspaceManager.UpdateWorkspaceStatus(workspaceID, "suspended"); err != nil {
+					fmt.Fprintf(os.Stderr, "suspension watcher: failed to update status for workspace %s: %v\n", workspaceID, err)
+				}
 				return
 			}
 		}

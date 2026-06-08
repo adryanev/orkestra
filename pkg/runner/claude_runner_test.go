@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/adryanev/orkestra/pkg/env"
+	"github.com/adryanev/orkestra/pkg/mcp"
+	"github.com/adryanev/orkestra/pkg/process"
 	"github.com/adryanev/orkestra/pkg/workspace"
 )
 
@@ -176,6 +180,58 @@ func testRunnerWithWorkspace(t *testing.T) (*Runner, *workspace.Manager, string)
 	return NewRunner(m), m, id
 }
 
+func waitForPersistedProcess(t *testing.T, cfg, workspaceID string) workspace.Session {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(filepath.Join(cfg, workspace.SessionsFile))
+		if err != nil {
+			if !os.IsNotExist(err) {
+				t.Fatalf("read sessions: %v", err)
+			}
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+
+		var sessions map[string]workspace.Session
+		if err := json.Unmarshal(data, &sessions); err != nil {
+			t.Fatalf("unmarshal sessions: %v", err)
+		}
+		if s, ok := sessions[workspaceID]; ok && s.PID > 0 && s.PGID > 0 && s.StartedAt > 0 {
+			return s
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for persisted process state for workspace %s", workspaceID)
+	return workspace.Session{}
+}
+
+func waitForWorkspaceStatus(t *testing.T, cfg, workspaceID, want string) workspace.Workspace {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(filepath.Join(cfg, workspace.WorkspacesFile))
+		if err != nil {
+			t.Fatalf("read workspaces: %v", err)
+		}
+
+		var workspaces map[string]workspace.Workspace
+		if err := json.Unmarshal(data, &workspaces); err != nil {
+			t.Fatalf("unmarshal workspaces: %v", err)
+		}
+		if ws, ok := workspaces[workspaceID]; ok && ws.Status == want {
+			return ws
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for workspace %s status %q", workspaceID, want)
+	return workspace.Workspace{}
+}
+
 func TestRunResumeRejectsMismatchedSavedAgent(t *testing.T) {
 	r, m, id := testRunnerWithWorkspace(t)
 	if err := m.AddSession(workspace.Session{WorkspaceID: id, Agent: string(Codex), ThreadID: "thread-abc"}); err != nil {
@@ -233,6 +289,73 @@ func TestStopClearsStaleProcessIdentity(t *testing.T) {
 	}
 	if ws.Status != "inactive" {
 		t.Fatalf("workspace status = %q, want inactive", ws.Status)
+	}
+}
+
+func TestSuspensionWatcherTerminatesAgentClearsProcessAndMarksSuspended(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake agent uses a POSIX shell script")
+	}
+
+	cfg := t.TempDir()
+	worktree := filepath.Join(cfg, "wt")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m, id := registerWorkspace(t, cfg, worktree)
+
+	fake := filepath.Join(cfg, "fake-claude")
+	script := "#!/bin/sh\n" +
+		`echo '{"type":"system","session_id":"sid-SUSPEND"}'` + "\n" +
+		"sleep 30\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunner(m)
+	runner.binOverride = fake
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(id, Claude, "do it", false, false, false, "", "")
+		done <- err
+	}()
+
+	running := waitForPersistedProcess(t, cfg, id)
+	defer func() { _ = process.TerminateGroup(running.PGID, 100*time.Millisecond) }()
+
+	if err := mcp.WritePending(m.ConfigDir(), id, mcp.PendingQuestion{
+		WorkspaceID: id,
+		Question:    "Should I continue?",
+		AskedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WritePending: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "agent process finished with error") {
+			t.Fatalf("Run error = %v, want terminated agent error", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for suspension watcher to terminate fake agent")
+	}
+
+	ws := waitForWorkspaceStatus(t, cfg, id, "suspended")
+
+	if process.IdentityMatches(running.PID, running.PGID, running.StartedAt) {
+		t.Fatalf("agent process identity still matches after suspension")
+	}
+
+	saved, err := m.GetSession(id)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if saved.PID != 0 || saved.PGID != 0 || saved.StartedAt != 0 {
+		t.Fatalf("process state should be cleared after suspension, got %+v", saved)
+	}
+	if ws.Status != "suspended" {
+		t.Fatalf("workspace status = %q, want suspended", ws.Status)
 	}
 }
 

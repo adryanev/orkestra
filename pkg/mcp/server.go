@@ -216,15 +216,6 @@ func (s *Server) askUser(ctx context.Context, _ *mcp.CallToolRequest, in askUser
 		return nil, askUserOutput{}, err
 	}
 
-	// R4: Check for existing pending question
-	existing, err := ReadPending(s.wm.ConfigDir(), in.ID)
-	if err != nil {
-		return nil, askUserOutput{}, fmt.Errorf("failed to check for pending question: %w", err)
-	}
-	if existing != nil {
-		return nil, askUserOutput{}, fmt.Errorf("pending question already exists for workspace %s", in.ID)
-	}
-
 	// Build and write pending question
 	q := PendingQuestion{
 		WorkspaceID: in.ID,
