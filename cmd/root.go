@@ -66,6 +66,7 @@ func init() {
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(todoCmd)
 	rootCmd.AddCommand(modelsCmd)
+	rootCmd.AddCommand(updateCmd)
 }
 
 func initConfig() {
