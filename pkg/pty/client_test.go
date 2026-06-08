@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/term"
 )
 
 func TestDetachDetector(t *testing.T) {
@@ -266,6 +268,13 @@ func (fd *fakeDaemon) close() {
 }
 
 func TestRunAttach_Success(t *testing.T) {
+	// RunAttach calls term.MakeRaw on stdinFd, which requires a real terminal.
+	// In CI and unit-test environments stdin is not a TTY, so skip rather than
+	// letting the test silently succeed without reaching the data-pump code.
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		t.Skip("requires real terminal: stdin is not a TTY")
+	}
+
 	socketPath := "/tmp/test-pty-attach-success.sock"
 	defer os.Remove(socketPath)
 
@@ -282,8 +291,7 @@ func TestRunAttach_Success(t *testing.T) {
 		t.Fatal("daemon not ready")
 	}
 
-	// Create a pipe to simulate stdin/stdout
-	stdinReader, stdinWriter := io.Pipe()
+	_, stdinWriter := io.Pipe()
 	defer stdinWriter.Close()
 
 	var outputBuf strings.Builder
@@ -291,29 +299,20 @@ func TestRunAttach_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Run attach in goroutine
 	errChan := make(chan error, 1)
 	go func() {
-		// We can't use real stdin fd in tests, so this will fail to set raw mode
-		// but we can test the protocol logic by using the pipe
-		err := RunAttach(ctx, socketPath, int(os.Stdin.Fd()), &outputBuf)
-		errChan <- err
+		errChan <- RunAttach(ctx, socketPath, int(os.Stdin.Fd()), &outputBuf)
 	}()
 
-	// Wait for completion or timeout
 	select {
 	case err := <-errChan:
-		// The test will fail at MakeRaw since we're not in a real terminal
-		// This is expected in unit tests
-		if err != nil && !strings.Contains(err.Error(), "inappropriate ioctl") &&
-			!strings.Contains(err.Error(), "not a terminal") {
+		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	case <-ctx.Done():
 		t.Fatal("attach timeout")
 	}
 
-	stdinReader.Close()
 	daemon.close()
 }
 

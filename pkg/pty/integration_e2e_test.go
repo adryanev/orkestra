@@ -73,6 +73,7 @@ func TestIntegration_DaemonClientEcho(t *testing.T) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
+	sendAttach(t, conn)
 
 	// Step 1: Expect MsgReady from daemon
 	if !scanner.Scan() {
@@ -227,6 +228,7 @@ func TestIntegration_MultipleInputOutputCycles(t *testing.T) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
+	sendAttach(t, conn)
 
 	// Consume initial messages (MsgReady and optional MsgBuffer)
 	initialMsgsRead := 0
@@ -362,6 +364,7 @@ func TestIntegration_ClientReconnect(t *testing.T) {
 	}
 
 	scanner1 := bufio.NewScanner(conn1)
+	sendAttach(t, conn1)
 	// Read MsgReady and optional MsgBuffer
 	scanner1.Scan() // MsgReady
 	conn1.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
@@ -401,6 +404,7 @@ func TestIntegration_ClientReconnect(t *testing.T) {
 	defer conn2.Close()
 
 	scanner2 := bufio.NewScanner(conn2)
+	sendAttach(t, conn2)
 
 	// Skip MsgReady
 	if !scanner2.Scan() {
@@ -493,6 +497,7 @@ func TestIntegration_AgentExitPropagation(t *testing.T) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
+	sendAttach(t, conn)
 
 	// Wait for messages - we expect MsgReady, possibly MsgBuffer, then MsgExit
 	exitReceived := false

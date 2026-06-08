@@ -4,6 +4,18 @@ import (
 	"testing"
 )
 
+// isPermissionPrompt is a test helper wrapping DetectPrompt for boolean checks.
+func isPermissionPrompt(line string) bool {
+	detected, _, _ := DetectPrompt(line)
+	return detected
+}
+
+// extractCommand is a test helper that extracts the command from a prompt line.
+func extractCommand(line string) string {
+	_, _, command := DetectPrompt(line)
+	return command
+}
+
 func TestDetectPrompt_ClaudeBashCommand(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -128,32 +140,42 @@ func TestDetectPrompt_ClaudeMCPTool(t *testing.T) {
 
 func TestDetectPrompt_Codex(t *testing.T) {
 	tests := []struct {
-		name            string
-		line            string
-		wantDetected    bool
-		wantAgent       string
-		wantCommand     string
+		name         string
+		line         string
+		wantDetected bool
+		wantAgent    string
+		wantCommand  string
 	}{
 		{
-			name:         "Codex run command",
-			line:         "Run command: git status",
+			name:         "Codex run command with Y/n",
+			line:         "Run command: git status [Y/n]",
 			wantDetected: true,
 			wantAgent:    "codex",
 			wantCommand:  "git status",
 		},
 		{
+			name:         "Codex run command without Y/n not matched",
+			line:         "Run command: git status",
+			wantDetected: false,
+		},
+		{
 			name:         "Codex run command case insensitive",
-			line:         "run command: npm test",
+			line:         "run command: npm test [Y/n]",
 			wantDetected: true,
 			wantAgent:    "codex",
 			wantCommand:  "npm test",
 		},
 		{
-			name:         "Codex execute prompt",
-			line:         "Execute: make build",
+			name:         "Codex execute prompt with Y/n",
+			line:         "Execute: make build [Y/n]",
 			wantDetected: true,
 			wantAgent:    "codex",
 			wantCommand:  "make build",
+		},
+		{
+			name:         "Codex execute without Y/n not matched",
+			line:         "Execute: make build",
+			wantDetected: false,
 		},
 		{
 			name:         "Codex execute with brackets",
@@ -164,7 +186,7 @@ func TestDetectPrompt_Codex(t *testing.T) {
 		},
 		{
 			name:         "Codex execute case insensitive",
-			line:         "EXECUTE: cargo run",
+			line:         "EXECUTE: cargo run [Y/n]",
 			wantDetected: true,
 			wantAgent:    "codex",
 			wantCommand:  "cargo run",
@@ -254,9 +276,14 @@ func TestIsPermissionPrompt(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "Codex prompt",
-			line: "Run command: npm test",
+			name: "Codex prompt with Y/n",
+			line: "Run command: npm test [Y/n]",
 			want: true,
+		},
+		{
+			name: "Codex prompt without Y/n not matched",
+			line: "Run command: npm test",
+			want: false,
 		},
 		{
 			name: "Non-prompt",
@@ -272,8 +299,8 @@ func TestIsPermissionPrompt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsPermissionPrompt(tt.line); got != tt.want {
-				t.Errorf("IsPermissionPrompt() = %v, want %v", got, tt.want)
+			if got := isPermissionPrompt(tt.line); got != tt.want {
+				t.Errorf("isPermissionPrompt() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -291,8 +318,8 @@ func TestExtractCommand(t *testing.T) {
 			want: "git status",
 		},
 		{
-			name: "Codex run command",
-			line: "Run command: npm install",
+			name: "Codex run command with Y/n",
+			line: "Run command: npm install [Y/n]",
 			want: "npm install",
 		},
 		{
@@ -314,8 +341,8 @@ func TestExtractCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ExtractCommand(tt.line); got != tt.want {
-				t.Errorf("ExtractCommand() = %q, want %q", got, tt.want)
+			if got := extractCommand(tt.line); got != tt.want {
+				t.Errorf("extractCommand() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -338,7 +365,7 @@ func TestDetectPrompt_ComplexCommands(t *testing.T) {
 		},
 		{
 			name:         "Command with redirects",
-			line:         "Run command: echo 'test' > output.txt",
+			line:         "Run command: echo 'test' > output.txt [Y/n]",
 			wantDetected: true,
 			wantAgent:    "codex",
 			wantCommand:  "echo 'test' > output.txt",
@@ -352,7 +379,7 @@ func TestDetectPrompt_ComplexCommands(t *testing.T) {
 		},
 		{
 			name:         "Multi-word command with flags",
-			line:         "Execute: docker run -it --rm -v $(pwd):/app node:latest",
+			line:         "Execute: docker run -it --rm -v $(pwd):/app node:latest [Y/n]",
 			wantDetected: true,
 			wantAgent:    "codex",
 			wantCommand:  "docker run -it --rm -v $(pwd):/app node:latest",

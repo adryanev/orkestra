@@ -49,8 +49,8 @@ func TestDaemon_WithSleep(t *testing.T) {
 	}
 
 	socketPath := filepath.Join(tmpDir, "daemon.sock")
-	ctx := context.Background()
-	// Note: test will clean up via t.Cleanup when test ends
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	// Use sleep to keep process alive
 	cmd := exec.Command("sleep", "10")
@@ -64,8 +64,18 @@ func TestDaemon_WithSleep(t *testing.T) {
 	}
 
 	// Run daemon
+	daemonDone := make(chan struct{})
 	go func() {
 		RunDaemon(ctx, cfg)
+		close(daemonDone)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-daemonDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("daemon did not exit")
+		}
 	}()
 
 	// Wait for socket
@@ -81,6 +91,12 @@ func TestDaemon_WithSleep(t *testing.T) {
 		t.Fatal("failed to connect to daemon")
 	}
 	defer conn.Close()
+
+	// Send MsgAttach before expecting MsgReady
+	attachMsg := Msg{Type: MsgAttach, Rows: 24, Cols: 80}
+	if encoded, err := Encode(attachMsg); err == nil {
+		conn.Write(encoded)
+	}
 
 	scanner := bufio.NewScanner(conn)
 

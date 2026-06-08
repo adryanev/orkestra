@@ -178,16 +178,15 @@ func TestDetectPrompt_RealCodexSamples(t *testing.T) {
 		description     string
 	}{
 		{
-			name: "Codex run command - basic",
-			sample: `╭─────────────────────────────────────────────────────────────╮
-│ Command to execute:                                         │
-│ Run command: git status                                     │
-╰─────────────────────────────────────────────────────────────╯
-[Y/n]`,
+			// Codex canonical single-line format: command and [Y/n] on the same line.
+			// The box-with-separate-[Y/n] format is intentionally not detected because
+			// the pattern requires [Y/n] inline to avoid false positives from log output.
+			name:         "Codex run command - basic",
+			sample:       "Run command: git status [Y/n]",
 			wantDetected: true,
 			wantAgent:    "codex",
 			wantCommand:  "git status",
-			description:  "Codex run command in box format",
+			description:  "Codex run command canonical single-line format",
 		},
 		{
 			name: "Codex execute prompt",
@@ -454,7 +453,7 @@ func TestDetectPrompt_ConcurrentSessions(t *testing.T) {
 	// In reality, orkestra spawns agents in separate PTYs, but this tests
 	// that patterns don't cross-contaminate if output were mixed
 	claudePrompt := "Allow claude to execute this Bash command? git push"
-	codexPrompt := "Run command: npm test"
+	codexPrompt := "Run command: npm test [Y/n]"
 	regularOutput := "Analyzing codebase... 50% complete"
 
 	inputs := []struct {
@@ -498,7 +497,7 @@ func splitLines(text string) []string {
 func TestIsPermissionPrompt_QuickCheck(t *testing.T) {
 	prompts := []string{
 		"Allow claude to execute this Bash command? git status",
-		"Run command: npm test",
+		"Run command: npm test [Y/n]",
 		"Allow claude to call mcp__orkestra__notify?",
 	}
 
@@ -507,17 +506,18 @@ func TestIsPermissionPrompt_QuickCheck(t *testing.T) {
 		"On branch main",
 		"",
 		"The claude agent is running",
+		"Run command: npm test", // Codex without [Y/n] should not match
 	}
 
 	for _, p := range prompts {
-		if !IsPermissionPrompt(p) {
-			t.Errorf("IsPermissionPrompt(%q) = false, want true", p)
+		if !isPermissionPrompt(p) {
+			t.Errorf("isPermissionPrompt(%q) = false, want true", p)
 		}
 	}
 
 	for _, np := range nonPrompts {
-		if IsPermissionPrompt(np) {
-			t.Errorf("IsPermissionPrompt(%q) = true, want false", np)
+		if isPermissionPrompt(np) {
+			t.Errorf("isPermissionPrompt(%q) = true, want false", np)
 		}
 	}
 }
@@ -529,16 +529,16 @@ func TestExtractCommand_QuickCheck(t *testing.T) {
 		want  string
 	}{
 		{"Allow claude to execute this Bash command? git status", "git status"},
-		{"Run command: npm install", "npm install"},
+		{"Run command: npm install [Y/n]", "npm install"},
 		{"Allow claude to call WebSearch?", "WebSearch"},
 		{"Regular output", ""},
 		{"", ""},
 	}
 
 	for _, tt := range tests {
-		got := ExtractCommand(tt.input)
+		got := extractCommand(tt.input)
 		if got != tt.want {
-			t.Errorf("ExtractCommand(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("extractCommand(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

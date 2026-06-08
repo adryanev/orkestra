@@ -23,22 +23,19 @@ type Event struct {
 	RespondedBy string     `json:"responded_by,omitempty"`
 }
 
-// auditLogPath returns the path to the audit log file.
-func auditLogPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
-	}
-	dir := filepath.Join(home, ".orkestra", "audit")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+// auditLogPath returns the path to the audit log file under configDir.
+func auditLogPath(configDir string) (string, error) {
+	dir := filepath.Join(configDir, "audit")
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("create audit dir: %w", err)
 	}
 	return filepath.Join(dir, "approvals.jsonl"), nil
 }
 
 // LogRequest logs an approval request event.
-func LogRequest(workspaceID, agent, command, requestID string, riskLevel risk.Level) error {
-	event := Event{
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func LogRequest(configDir, workspaceID, agent, command, requestID string, riskLevel risk.Level) error {
+	return logEvent(configDir, Event{
 		Timestamp:   time.Now(),
 		WorkspaceID: workspaceID,
 		Agent:       agent,
@@ -46,13 +43,13 @@ func LogRequest(workspaceID, agent, command, requestID string, riskLevel risk.Le
 		RiskLevel:   riskLevel,
 		EventType:   "request",
 		RequestID:   requestID,
-	}
-	return logEvent(event)
+	})
 }
 
 // LogApprove logs an approval response event.
-func LogApprove(workspaceID, agent, command, requestID, respondedBy string, riskLevel risk.Level) error {
-	event := Event{
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func LogApprove(configDir, workspaceID, agent, command, requestID, respondedBy string, riskLevel risk.Level) error {
+	return logEvent(configDir, Event{
 		Timestamp:   time.Now(),
 		WorkspaceID: workspaceID,
 		Agent:       agent,
@@ -61,13 +58,13 @@ func LogApprove(workspaceID, agent, command, requestID, respondedBy string, risk
 		EventType:   "approve",
 		RequestID:   requestID,
 		RespondedBy: respondedBy,
-	}
-	return logEvent(event)
+	})
 }
 
 // LogReject logs a rejection response event.
-func LogReject(workspaceID, agent, command, requestID, respondedBy string, riskLevel risk.Level) error {
-	event := Event{
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func LogReject(configDir, workspaceID, agent, command, requestID, respondedBy string, riskLevel risk.Level) error {
+	return logEvent(configDir, Event{
 		Timestamp:   time.Now(),
 		WorkspaceID: workspaceID,
 		Agent:       agent,
@@ -76,13 +73,13 @@ func LogReject(workspaceID, agent, command, requestID, respondedBy string, riskL
 		EventType:   "reject",
 		RequestID:   requestID,
 		RespondedBy: respondedBy,
-	}
-	return logEvent(event)
+	})
 }
 
 // LogTimeout logs a timeout event.
-func LogTimeout(workspaceID, agent, command, requestID string, riskLevel risk.Level) error {
-	event := Event{
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func LogTimeout(configDir, workspaceID, agent, command, requestID string, riskLevel risk.Level) error {
+	return logEvent(configDir, Event{
 		Timestamp:   time.Now(),
 		WorkspaceID: workspaceID,
 		Agent:       agent,
@@ -90,31 +87,27 @@ func LogTimeout(workspaceID, agent, command, requestID string, riskLevel risk.Le
 		RiskLevel:   riskLevel,
 		EventType:   "timeout",
 		RequestID:   requestID,
-	}
-	return logEvent(event)
+	})
 }
 
-// logEvent appends an event to the audit log.
-func logEvent(event Event) error {
-	path, err := auditLogPath()
+// logEvent appends an event to the audit log under configDir.
+func logEvent(configDir string, event Event) error {
+	path, err := auditLogPath(configDir)
 	if err != nil {
 		return err
 	}
 
-	// Open file in append mode
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("open audit log: %w", err)
 	}
 	defer f.Close()
 
-	// Marshal event to JSON
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}
 
-	// Append newline-delimited JSON
 	data = append(data, '\n')
 	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("write audit log: %w", err)

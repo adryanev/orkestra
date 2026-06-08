@@ -53,12 +53,13 @@ var patterns = []PromptPattern{
 			return ""
 		},
 	},
-	// Codex permission prompt pattern (stops at newline or box chars)
-	// Example: "Run command: git status"
-	// Box drawing chars: │ ╰ ╭ ─ ╮ ╯
+	// Codex permission prompt pattern, anchored to line start to prevent
+	// mid-paragraph false positives. Requires [Y/n] after the command so
+	// general "Run command:" log lines are not mistaken for prompts.
+	// Example: "Run command: git status [Y/n]"
 	{
 		Agent:   "codex",
-		Pattern: regexp.MustCompile(`(?i)Run\s+command:\s*([^\n\[│╰╭─╮╯]+)`),
+		Pattern: regexp.MustCompile(`(?im)^Run\s+command:\s*([^\n\[│╰╭─╮╯]+)\s*\[Y/n\]`),
 		CommandExtractor: func(match []string) string {
 			if len(match) > 1 {
 				return strings.TrimSpace(match[1])
@@ -66,11 +67,12 @@ var patterns = []PromptPattern{
 			return ""
 		},
 	},
-	// Codex approval prompt pattern (stops at newline or box chars)
+	// Codex approval prompt pattern, anchored to line start.
+	// Requires [Y/n] after the command.
 	// Example: "Execute: npm install [Y/n]"
 	{
 		Agent:   "codex",
-		Pattern: regexp.MustCompile(`(?i)Execute:\s*([^\n\[│╰╭─╮╯]+)`),
+		Pattern: regexp.MustCompile(`(?im)^Execute:\s*([^\n\[│╰╭─╮╯]+)\s*\[Y/n\]`),
 		CommandExtractor: func(match []string) string {
 			if len(match) > 1 {
 				return strings.TrimSpace(match[1])
@@ -97,17 +99,3 @@ func DetectPrompt(line string) (detected bool, agent, command string) {
 	return false, "", ""
 }
 
-// IsPermissionPrompt is a convenience function that returns only whether
-// the line contains a permission prompt, without extracting details.
-func IsPermissionPrompt(line string) bool {
-	detected, _, _ := DetectPrompt(line)
-	return detected
-}
-
-// ExtractCommand attempts to extract the command from a line that was
-// previously identified as a permission prompt. Returns empty string if
-// no command can be extracted.
-func ExtractCommand(line string) string {
-	_, _, command := DetectPrompt(line)
-	return command
-}

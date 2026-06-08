@@ -1,5 +1,5 @@
 // Package state provides approval state management for command execution requests.
-// Approvals are stored as JSON files in ~/.orkestra/approvals/ with atomic write
+// Approvals are stored as JSON files under <configDir>/approvals/ with atomic write
 // operations and cross-process file locking.
 package state
 
@@ -47,67 +47,42 @@ func NewApprovalRequest(workspaceID, agent, command string, riskLevel risk.Level
 	}
 }
 
-// approvalDir returns the directory for approval state files.
-func approvalDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
-	}
-	return filepath.Join(home, ".orkestra", "approvals"), nil
+// approvalDir returns the directory for approval state files under configDir.
+func approvalDir(configDir string) string {
+	return filepath.Join(configDir, "approvals")
 }
 
 // pendingPath returns the path to the pending approval file for a workspace.
-func pendingPath(workspaceID string) (string, error) {
-	dir, err := approvalDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, workspaceID+"_pending.json"), nil
+func pendingPath(configDir, workspaceID string) string {
+	return filepath.Join(approvalDir(configDir), workspaceID+"_pending.json")
 }
 
 // responsePath returns the path to the approval response file for a workspace.
-func responsePath(workspaceID string) (string, error) {
-	dir, err := approvalDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, workspaceID+"_response.json"), nil
+func responsePath(configDir, workspaceID string) string {
+	return filepath.Join(approvalDir(configDir), workspaceID+"_response.json")
 }
 
 // lockPath returns the path to the lock file for approval state.
-func lockPath(workspaceID string) (string, error) {
-	dir, err := approvalDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, workspaceID+".lock"), nil
+func lockPath(configDir, workspaceID string) string {
+	return filepath.Join(approvalDir(configDir), workspaceID+".lock")
 }
 
 // WritePendingApproval atomically writes a pending approval request.
 // It acquires a file lock to ensure thread-safety across processes.
-func WritePendingApproval(workspaceID string, req ApprovalRequest) error {
-	lockFile, err := lockPath(workspaceID)
-	if err != nil {
-		return err
-	}
-
-	lock, err := Acquire(lockFile)
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func WritePendingApproval(configDir, workspaceID string, req ApprovalRequest) error {
+	lock, err := Acquire(lockPath(configDir, workspaceID))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer lock.Release()
-
-	path, err := pendingPath(workspaceID)
-	if err != nil {
-		return err
-	}
 
 	data, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
 
-	if err := WriteAtomic(path, data, 0644); err != nil {
+	if err := WriteAtomic(pendingPath(configDir, workspaceID), data, 0600); err != nil {
 		return fmt.Errorf("write pending approval: %w", err)
 	}
 
@@ -116,24 +91,15 @@ func WritePendingApproval(workspaceID string, req ApprovalRequest) error {
 
 // ReadPendingApproval reads a pending approval request.
 // Returns nil if no pending request exists (not an error).
-func ReadPendingApproval(workspaceID string) (*ApprovalRequest, error) {
-	lockFile, err := lockPath(workspaceID)
-	if err != nil {
-		return nil, err
-	}
-
-	lock, err := Acquire(lockFile)
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func ReadPendingApproval(configDir, workspaceID string) (*ApprovalRequest, error) {
+	lock, err := Acquire(lockPath(configDir, workspaceID))
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
 	defer lock.Release()
 
-	path, err := pendingPath(workspaceID)
-	if err != nil {
-		return nil, err
-	}
-
-	data, err := ReadFile(path)
+	data, err := ReadFile(pendingPath(configDir, workspaceID))
 	if err != nil {
 		return nil, fmt.Errorf("read pending approval: %w", err)
 	}
@@ -151,29 +117,20 @@ func ReadPendingApproval(workspaceID string) (*ApprovalRequest, error) {
 
 // WriteApprovalResponse atomically writes an approval response.
 // It acquires a file lock to ensure thread-safety across processes.
-func WriteApprovalResponse(workspaceID string, resp ApprovalResponse) error {
-	lockFile, err := lockPath(workspaceID)
-	if err != nil {
-		return err
-	}
-
-	lock, err := Acquire(lockFile)
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func WriteApprovalResponse(configDir, workspaceID string, resp ApprovalResponse) error {
+	lock, err := Acquire(lockPath(configDir, workspaceID))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer lock.Release()
-
-	path, err := responsePath(workspaceID)
-	if err != nil {
-		return err
-	}
 
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal response: %w", err)
 	}
 
-	if err := WriteAtomic(path, data, 0644); err != nil {
+	if err := WriteAtomic(responsePath(configDir, workspaceID), data, 0600); err != nil {
 		return fmt.Errorf("write approval response: %w", err)
 	}
 
@@ -182,24 +139,15 @@ func WriteApprovalResponse(workspaceID string, resp ApprovalResponse) error {
 
 // ReadApprovalResponse reads an approval response.
 // Returns nil if no response exists (not an error).
-func ReadApprovalResponse(workspaceID string) (*ApprovalResponse, error) {
-	lockFile, err := lockPath(workspaceID)
-	if err != nil {
-		return nil, err
-	}
-
-	lock, err := Acquire(lockFile)
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func ReadApprovalResponse(configDir, workspaceID string) (*ApprovalResponse, error) {
+	lock, err := Acquire(lockPath(configDir, workspaceID))
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
 	defer lock.Release()
 
-	path, err := responsePath(workspaceID)
-	if err != nil {
-		return nil, err
-	}
-
-	data, err := ReadFile(path)
+	data, err := ReadFile(responsePath(configDir, workspaceID))
 	if err != nil {
 		return nil, fmt.Errorf("read approval response: %w", err)
 	}
@@ -218,35 +166,21 @@ func ReadApprovalResponse(workspaceID string) (*ApprovalResponse, error) {
 // CleanupApprovalState removes both pending and response files for a workspace.
 // This should be called after an approval workflow completes.
 // Returns nil if files don't exist (not an error).
-func CleanupApprovalState(workspaceID string) error {
-	lockFile, err := lockPath(workspaceID)
-	if err != nil {
-		return err
-	}
-
-	lock, err := Acquire(lockFile)
+// configDir is the root Orkestra state directory (e.g. Manager.ConfigDir()).
+func CleanupApprovalState(configDir, workspaceID string) error {
+	lock, err := Acquire(lockPath(configDir, workspaceID))
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer lock.Release()
 
-	pending, err := pendingPath(workspaceID)
-	if err != nil {
-		return err
-	}
-
-	response, err := responsePath(workspaceID)
-	if err != nil {
-		return err
-	}
-
 	// Remove pending file (ignore not-exist errors)
-	if err := os.Remove(pending); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(pendingPath(configDir, workspaceID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove pending file: %w", err)
 	}
 
 	// Remove response file (ignore not-exist errors)
-	if err := os.Remove(response); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(responsePath(configDir, workspaceID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove response file: %w", err)
 	}
 

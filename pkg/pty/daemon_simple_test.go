@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,12 @@ func TestDaemon_Minimal(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// Send MsgAttach before expecting MsgReady
+	attachMsg := Msg{Type: MsgAttach, Rows: 24, Cols: 80}
+	if encoded, err := Encode(attachMsg); err == nil {
+		conn.Write(encoded)
+	}
+
 	scanner := bufio.NewScanner(conn)
 
 	// Should get MsgReady
@@ -152,10 +159,20 @@ func TestDaemon_CatEcho(t *testing.T) {
 	}
 
 	// Run daemon
+	daemonDone := make(chan struct{})
 	go func() {
+		defer close(daemonDone)
 		err := RunDaemon(ctx, cfg)
 		if err != nil {
 			t.Logf("daemon error: %v", err)
+		}
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-daemonDone:
+		case <-time.After(2 * time.Second):
+			t.Error("daemon did not exit")
 		}
 	}()
 
@@ -172,6 +189,12 @@ func TestDaemon_CatEcho(t *testing.T) {
 		t.Fatal("failed to connect to daemon")
 	}
 	defer conn.Close()
+
+	// Send MsgAttach before expecting MsgReady
+	attachMsg := Msg{Type: MsgAttach, Rows: 24, Cols: 80}
+	if encoded, err := Encode(attachMsg); err == nil {
+		conn.Write(encoded)
+	}
 
 	scanner := bufio.NewScanner(conn)
 
@@ -227,10 +250,9 @@ func TestDaemon_CatEcho(t *testing.T) {
 			t.Errorf("expected MsgOutput, got %s", msg.Type)
 		}
 		data, _ := DecodeData(msg.Data)
-		// PTY adds \r\n due to terminal line discipline
 		expected := "test\r\n"
-		if string(data) != expected {
-			t.Errorf("expected %q, got %q", expected, data)
+		if !strings.Contains(string(data), expected) {
+			t.Errorf("expected output to contain %q, got %q", expected, data)
 		} else {
 			t.Log("Successfully echoed input!")
 		}

@@ -24,22 +24,22 @@ import (
 
 // DaemonConfig holds configuration for the PTY broker daemon.
 type DaemonConfig struct {
-	WorkspaceID      string             // Workspace identifier
-	SocketPath       string             // Unix socket path for client connections
-	AgentCmd         *exec.Cmd          // Agent command (not started yet)
-	RingSize         int                // Ring buffer size in bytes
-	Manager          *workspace.Manager // Workspace manager for persistence
-	ApprovalTimeout  time.Duration      // Timeout for approval requests (default: 5 minutes)
-	EnableAutoApprove bool              // Enable automatic approval interception (default: false)
+	WorkspaceID       string             // Workspace identifier
+	SocketPath        string             // Unix socket path for client connections
+	AgentCmd          *exec.Cmd          // Agent command (not started yet)
+	RingSize          int                // Ring buffer size in bytes
+	Manager           *workspace.Manager // Workspace manager for persistence
+	ApprovalTimeout   time.Duration      // Timeout for approval requests (default: 5 minutes)
+	EnableAutoApprove bool               // Enable automatic approval interception (default: false)
 }
 
 // PTYSession tracks the PTY master and agent process information.
 type PTYSession struct {
-	MasterFd     *os.File
-	PID          int
-	PGID         int
-	StartedAt    int64
-	SocketPath   string
+	MasterFd   *os.File
+	PID        int
+	PGID       int
+	StartedAt  int64
+	SocketPath string
 }
 
 // RunDaemon starts the PTY broker daemon that manages a single agent PTY session.
@@ -64,6 +64,18 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	}
 	if cfg.ApprovalTimeout <= 0 {
 		cfg.ApprovalTimeout = 5 * time.Minute // default to 5 minutes
+	}
+
+	configDir := cfg.Manager.ConfigDir()
+
+	daemonPID := os.Getpid()
+	daemonPGID, err := process.PGID(daemonPID)
+	if err != nil {
+		return fmt.Errorf("failed to capture PTY daemon process group: %w", err)
+	}
+	daemonStart, err := process.StartedAt(daemonPID)
+	if err != nil {
+		return fmt.Errorf("failed to capture PTY daemon identity: %w", err)
 	}
 
 	// 1. Allocate PTY pair
@@ -91,7 +103,13 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	}
 
 	pid := cfg.AgentCmd.Process.Pid
-	pgid := pid // With Setsid, PGID equals PID
+	pgid, err := process.PGID(pid)
+	if err != nil {
+		slave.Close()
+		_ = process.TerminateGroup(pid, process.DefaultGrace)
+		_ = cfg.AgentCmd.Wait()
+		return fmt.Errorf("failed to capture agent process group: %w", err)
+	}
 
 	// Debug: log process start
 	fmt.Fprintf(os.Stderr, "[daemon] started agent PID=%d PGID=%d\n", pid, pgid)
@@ -132,10 +150,23 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 		_ = cfg.AgentCmd.Wait()
 		return fmt.Errorf("failed to create Unix socket: %w", err)
 	}
+	// Restrict socket access to the owner only.
+	_ = os.Chmod(cfg.SocketPath, 0600)
 	defer func() {
 		listener.Close()
 		_ = os.Remove(cfg.SocketPath)
 	}()
+
+	if err := cfg.Manager.SetPTYSession(cfg.WorkspaceID, workspace.PTYSession{
+		SocketPath:  cfg.SocketPath,
+		DaemonPID:   daemonPID,
+		DaemonPGID:  daemonPGID,
+		DaemonStart: daemonStart,
+	}); err != nil {
+		_ = process.TerminateGroup(pgid, process.DefaultGrace)
+		_ = cfg.AgentCmd.Wait()
+		return fmt.Errorf("set PTY session: %w", err)
+	}
 
 	// 9. Initialize ring buffer
 	ring := NewRingBuffer(cfg.RingSize)
@@ -145,8 +176,10 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	defer cancel()
 
 	var wg sync.WaitGroup
+	var clientWg sync.WaitGroup // tracks individual handleClient goroutines
 	var clientMu sync.Mutex
 	var currentClient net.Conn
+	agentDone := make(chan struct{})
 
 	// Goroutine A: PTY reader → prompt detection → ring buffer → current client
 	wg.Add(1)
@@ -168,6 +201,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 						data,
 						&lineBuffer,
 						cfg.WorkspaceID,
+						configDir,
 						cfg.ApprovalTimeout,
 						master,
 					)
@@ -220,6 +254,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(agentDone)
 		waitErr := cfg.AgentCmd.Wait()
 
 		exitCode := 0
@@ -233,7 +268,8 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 			}
 		}
 
-		// Send exit message to current client
+		// Send exit message to current client, then close it so handleClient
+		// unblocks immediately rather than waiting for the cancel deadline.
 		clientMu.Lock()
 		if currentClient != nil {
 			msg := Msg{
@@ -244,11 +280,13 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 			if encErr == nil {
 				_, _ = currentClient.Write(encoded)
 			}
+			_ = currentClient.Close()
 		}
 		clientMu.Unlock()
 
 		// Clear session process from manager
 		_ = cfg.Manager.ClearSessionProcess(cfg.WorkspaceID)
+		_ = cfg.Manager.ClearPTYSession(cfg.WorkspaceID)
 
 		// Cancel daemon context to stop accept loop
 		cancel()
@@ -273,28 +311,45 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 				}
 			}
 
-			// Handle client connection in a separate goroutine
-			// so the accept loop can continue accepting new connections
-			go handleClient(daemonCtx, conn, &session, ring, &clientMu, &currentClient, master)
+			// Track each client goroutine so shutdown can wait for them.
+			clientWg.Add(1)
+			go func(c net.Conn) {
+				defer clientWg.Done()
+				// When the daemon context is cancelled, unblock any blocking
+				// read/write on this connection within 5 seconds.
+				go func() {
+					<-daemonCtx.Done()
+					_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+				}()
+				handleClient(daemonCtx, c, &session, ring, &clientMu, &currentClient, master)
+			}(conn)
 		}
 	}()
 
-	// Wait for daemon context cancellation or external context
+	// Wait for agent exit or external context cancellation. daemonCtx also
+	// closes when the parent ctx is cancelled, so it cannot distinguish those
+	// cases for shutdown decisions.
 	select {
-	case <-daemonCtx.Done():
+	case <-agentDone:
 		// Agent exited
 		fmt.Fprintf(os.Stderr, "[daemon] agent exited, shutting down\n")
 	case <-ctx.Done():
 		// External cancellation
 		fmt.Fprintf(os.Stderr, "[daemon] context canceled, terminating agent\n")
-		_ = process.TerminateGroup(pgid, process.DefaultGrace)
+		if process.IdentityMatches(pid, pgid, startedAt) {
+			_ = process.TerminateGroup(pgid, process.DefaultGrace)
+		} else {
+			_ = cfg.AgentCmd.Process.Kill()
+		}
 	}
 
 	// Close listener to stop accept loop
 	listener.Close()
 
-	// Wait for all goroutines
+	// Wait for main goroutines (PTY reader, agent waiter, accept loop),
+	// then for any in-flight client handlers.
 	wg.Wait()
+	clientWg.Wait()
 
 	return nil
 }
@@ -335,6 +390,19 @@ func handleClient(
 		clientMu.Unlock()
 	}()
 
+	// Read MsgAttach from the client, which carries the initial terminal size.
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return
+	}
+	attachMsg, err := Decode(scanner.Bytes())
+	if err != nil || attachMsg.Type != MsgAttach {
+		return
+	}
+	if attachMsg.Rows > 0 && attachMsg.Cols > 0 {
+		_ = Setsize(master, attachMsg.Rows, attachMsg.Cols)
+	}
+
 	// Send MsgReady
 	readyMsg := Msg{
 		Type:    MsgReady,
@@ -348,21 +416,18 @@ func handleClient(
 		return
 	}
 
-	// Send MsgBuffer with ring buffer contents
+	// Send MsgBuffer with ring buffer contents.
 	bufferData := ring.Bytes()
-	if len(bufferData) > 0 {
-		bufferMsg := Msg{
-			Type: MsgBuffer,
-			Data: EncodeData(bufferData),
-		}
-		encoded, err := Encode(bufferMsg)
-		if err == nil {
-			_, _ = conn.Write(encoded)
-		}
+	bufferMsg := Msg{
+		Type: MsgBuffer,
+		Data: EncodeData(bufferData),
+	}
+	encoded, err = Encode(bufferMsg)
+	if err == nil {
+		_, _ = conn.Write(encoded)
 	}
 
 	// Input/resize/detach loop
-	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		msg, err := Decode(line)
@@ -402,6 +467,7 @@ func processWithPromptDetection(
 	data []byte,
 	lineBuffer *bytes.Buffer,
 	workspaceID string,
+	configDir string,
 	timeout time.Duration,
 	master *os.File,
 ) []byte {
@@ -426,17 +492,14 @@ func processWithPromptDetection(
 	for i := 0; i < len(lines)-1; i++ {
 		line := lines[i]
 		if detected, agent, command := DetectPrompt(line); detected {
-			// Prompt detected - trigger approval workflow
-			handleApprovalRequest(workspaceID, agent, command, timeout, master)
+			handleApprovalRequest(workspaceID, agent, command, configDir, timeout, master)
 		}
 	}
 
 	// Also check the incomplete line for prompts (some prompts don't end with newline)
 	if lastLine != "" {
 		if detected, agent, command := DetectPrompt(lastLine); detected {
-			// Prompt detected - trigger approval workflow
-			handleApprovalRequest(workspaceID, agent, command, timeout, master)
-			// Clear the buffer since we processed the prompt
+			handleApprovalRequest(workspaceID, agent, command, configDir, timeout, master)
 			lineBuffer.Reset()
 		}
 	}
@@ -449,80 +512,67 @@ func processWithPromptDetection(
 // 1. Classify risk
 // 2. Create approval request
 // 3. Write to pending state
-// 4. Wait for response (with timeout)
-// 5. Inject approval/rejection to PTY
-// 6. Cleanup state
-// 7. Audit log
+// 4. Audit log the request
+// 5. Wait for response (with timeout)
+// 6. Inject approval/rejection to PTY
+// 7. Audit log the outcome
+// 8. Cleanup state
 func handleApprovalRequest(
 	workspaceID string,
 	agent string,
 	command string,
+	configDir string,
 	timeout time.Duration,
 	master *os.File,
 ) {
-	// 1. Classify risk
 	riskLevel := ClassifyRisk(command)
-
-	// 2. Create approval request
 	req := state.NewApprovalRequest(workspaceID, agent, command, riskLevel, timeout)
 
-	// 3. Write to pending state
-	if err := state.WritePendingApproval(workspaceID, req); err != nil {
+	if err := state.WritePendingApproval(configDir, workspaceID, req); err != nil {
 		fmt.Fprintf(os.Stderr, "[daemon] failed to write pending approval: %v\n", err)
-		// On error, auto-reject
 		injectResponse(master, false)
 		return
 	}
 
-	// 4. Audit log the request
-	if err := audit.LogRequest(workspaceID, agent, command, req.ID, riskLevel); err != nil {
+	if err := audit.LogRequest(configDir, workspaceID, agent, command, req.ID, riskLevel); err != nil {
 		fmt.Fprintf(os.Stderr, "[daemon] failed to audit log request: %v\n", err)
 	}
 
-	// 5. Wait for response with timeout
-	response := waitForApprovalResponse(workspaceID, timeout)
+	response := waitForApprovalResponse(configDir, workspaceID, timeout)
 
-	// 6. Handle response
 	if response == nil {
-		// Timeout - auto-reject
 		fmt.Fprintf(os.Stderr, "[daemon] approval timeout for command: %s\n", command)
 		injectResponse(master, false)
-
-		// Audit log timeout
-		if err := audit.LogTimeout(workspaceID, agent, command, req.ID, riskLevel); err != nil {
+		if err := audit.LogTimeout(configDir, workspaceID, agent, command, req.ID, riskLevel); err != nil {
 			fmt.Fprintf(os.Stderr, "[daemon] failed to audit log timeout: %v\n", err)
 		}
 	} else {
-		// Response received
 		fmt.Fprintf(os.Stderr, "[daemon] approval response: approved=%v for command: %s\n", response.Approved, command)
 		injectResponse(master, response.Approved)
-
-		// Audit log response
 		if response.Approved {
-			if err := audit.LogApprove(workspaceID, agent, command, req.ID, response.RespondedBy, riskLevel); err != nil {
+			if err := audit.LogApprove(configDir, workspaceID, agent, command, req.ID, response.RespondedBy, riskLevel); err != nil {
 				fmt.Fprintf(os.Stderr, "[daemon] failed to audit log approval: %v\n", err)
 			}
 		} else {
-			if err := audit.LogReject(workspaceID, agent, command, req.ID, response.RespondedBy, riskLevel); err != nil {
+			if err := audit.LogReject(configDir, workspaceID, agent, command, req.ID, response.RespondedBy, riskLevel); err != nil {
 				fmt.Fprintf(os.Stderr, "[daemon] failed to audit log rejection: %v\n", err)
 			}
 		}
 	}
 
-	// 7. Cleanup approval state
-	if err := state.CleanupApprovalState(workspaceID); err != nil {
+	if err := state.CleanupApprovalState(configDir, workspaceID); err != nil {
 		fmt.Fprintf(os.Stderr, "[daemon] failed to cleanup approval state: %v\n", err)
 	}
 }
 
 // waitForApprovalResponse polls for an approval response with timeout.
 // Returns nil on timeout, otherwise returns the response.
-func waitForApprovalResponse(workspaceID string, timeout time.Duration) *state.ApprovalResponse {
+func waitForApprovalResponse(configDir, workspaceID string, timeout time.Duration) *state.ApprovalResponse {
 	deadline := time.Now().Add(timeout)
 	pollInterval := 100 * time.Millisecond
 
 	for time.Now().Before(deadline) {
-		response, err := state.ReadApprovalResponse(workspaceID)
+		response, err := state.ReadApprovalResponse(configDir, workspaceID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[daemon] error reading approval response: %v\n", err)
 			time.Sleep(pollInterval)
@@ -533,11 +583,9 @@ func waitForApprovalResponse(workspaceID string, timeout time.Duration) *state.A
 			return response
 		}
 
-		// Sleep before next poll
 		time.Sleep(pollInterval)
 	}
 
-	// Timeout
 	return nil
 }
 

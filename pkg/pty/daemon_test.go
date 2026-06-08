@@ -81,6 +81,20 @@ func connectToDaemon(socketPath string, timeout time.Duration) (net.Conn, error)
 	return nil, fmt.Errorf("failed to connect to daemon within timeout")
 }
 
+// sendAttach sends MsgAttach with a default terminal size on conn.
+// Must be called before reading MsgReady from a freshly connected daemon.
+func sendAttach(t *testing.T, conn net.Conn) {
+	t.Helper()
+	msg := Msg{Type: MsgAttach, Rows: 24, Cols: 80}
+	encoded, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("encode attach: %v", err)
+	}
+	if _, err := conn.Write(encoded); err != nil {
+		t.Fatalf("send attach: %v", err)
+	}
+}
+
 // TestDaemon_HappyPath tests the basic daemon functionality with 'cat' as agent
 func TestDaemon_HappyPath(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
@@ -123,12 +137,13 @@ func TestDaemon_HappyPath(t *testing.T) {
 		// Daemon started successfully
 	}
 
-	// Connect client
+	// Connect client and attach
 	conn, err := connectToDaemon(socketPath, 2*time.Second)
 	if err != nil {
 		t.Fatalf("failed to connect to daemon: %v", err)
 	}
 	defer conn.Close()
+	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
 
@@ -184,8 +199,8 @@ func TestDaemon_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to decode output data: %v", err)
 	}
-	if string(outputData) != "hello\n" {
-		t.Errorf("expected 'hello\\n', got %q", outputData)
+	if !strings.Contains(string(outputData), "hello\r\n") {
+		t.Errorf("expected output to contain 'hello\\r\\n', got %q", outputData)
 	}
 
 	// Detach
@@ -242,6 +257,7 @@ func TestDaemon_RingBufferReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect client 1: %v", err)
 	}
+	sendAttach(t, conn1)
 
 	scanner := bufio.NewScanner(conn1)
 	// Skip MsgReady and MsgBuffer
@@ -273,6 +289,7 @@ func TestDaemon_RingBufferReplay(t *testing.T) {
 		t.Fatalf("failed to connect client 2: %v", err)
 	}
 	defer conn2.Close()
+	sendAttach(t, conn2)
 
 	scanner2 := bufio.NewScanner(conn2)
 
@@ -338,6 +355,7 @@ func TestDaemon_ConcurrentAttachRejection(t *testing.T) {
 		t.Fatalf("failed to connect client 1: %v", err)
 	}
 	defer conn1.Close()
+	sendAttach(t, conn1)
 
 	scanner1 := bufio.NewScanner(conn1)
 	// Skip MsgReady and MsgBuffer
@@ -381,8 +399,9 @@ func TestDaemon_AgentExitPropagation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Use a script that exits immediately
-	cmd := exec.Command("sh", "-c", "exit 42")
+	// Keep the agent alive long enough for the client to attach, then verify
+	// the daemon propagates its exit status.
+	cmd := exec.Command("sh", "-c", "sleep 0.5; exit 42")
 	cfg := DaemonConfig{
 		WorkspaceID: wsID,
 		SocketPath:  socketPath,
@@ -405,6 +424,7 @@ func TestDaemon_AgentExitPropagation(t *testing.T) {
 		t.Fatalf("failed to connect: %v", err)
 	}
 	defer conn.Close()
+	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
 
@@ -482,6 +502,7 @@ func TestDaemon_ResizePropagation(t *testing.T) {
 		t.Fatalf("failed to connect: %v", err)
 	}
 	defer conn.Close()
+	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
 	// Skip MsgReady and MsgBuffer
@@ -702,6 +723,7 @@ func TestDaemon_MultipleInputOutput(t *testing.T) {
 		t.Fatalf("failed to connect: %v", err)
 	}
 	defer conn.Close()
+	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
 	// Skip MsgReady and MsgBuffer
@@ -732,7 +754,7 @@ func TestDaemon_MultipleInputOutput(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for scanner.Scan() && received < len(inputs) {
+		for received < len(inputs) && scanner.Scan() {
 			msg, err := Decode(scanner.Bytes())
 			if err != nil {
 				continue

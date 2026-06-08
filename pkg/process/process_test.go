@@ -40,6 +40,15 @@ func TestAliveFalseForBogusPID(t *testing.T) {
 	}
 }
 
+func TestPGIDRejectsInvalidPID(t *testing.T) {
+	if _, err := PGID(0); err == nil {
+		t.Error("PGID(0) should return error")
+	}
+	if _, err := PGID(-1); err == nil {
+		t.Error("PGID(-1) should return error")
+	}
+}
+
 // TestTerminateGroupHappyPath: a long-running group leader is terminated by a
 // separate code path (mirroring run vs stop) and is gone afterward.
 func TestTerminateGroupHappyPath(t *testing.T) {

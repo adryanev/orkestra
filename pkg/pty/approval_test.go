@@ -13,6 +13,8 @@ import (
 )
 
 func TestProcessWithPromptDetection(t *testing.T) {
+	configDir := t.TempDir()
+
 	tests := []struct {
 		name           string
 		input          string
@@ -52,8 +54,6 @@ func TestProcessWithPromptDetection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var lineBuffer bytes.Buffer
 
-			// Create a test PTY master (just for API compatibility - we won't actually write to it in this test)
-			// In a real test, you'd use a pipe or mock
 			r, w, err := os.Pipe()
 			if err != nil {
 				t.Fatalf("failed to create pipe: %v", err)
@@ -61,35 +61,30 @@ func TestProcessWithPromptDetection(t *testing.T) {
 			defer r.Close()
 			defer w.Close()
 
-			// Process the data
 			result := processWithPromptDetection(
 				[]byte(tt.input),
 				&lineBuffer,
 				"test-workspace",
+				configDir,
 				1*time.Second,
-				w, // Use write end of pipe as mock master
+				w,
 			)
 
-			// Verify the result is unchanged (we just detect, not modify)
 			if string(result) != tt.input {
 				t.Errorf("expected unchanged output, got %q", result)
 			}
-
-			// Note: In this unit test we can't easily verify the approval workflow was triggered
-			// without mocking the state package. That would be better tested in an integration test.
 		})
 	}
 }
 
 func TestHandleApprovalRequest_AutoReject(t *testing.T) {
-	// This test verifies that when no response is received, the request times out and auto-rejects
+	configDir := t.TempDir()
 
 	workspaceID := "test-workspace-timeout"
 	agent := "claude"
 	command := "git status"
 	timeout := 200 * time.Millisecond
 
-	// Create a pipe to capture injected response
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("failed to create pipe: %v", err)
@@ -97,26 +92,21 @@ func TestHandleApprovalRequest_AutoReject(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
-	// Clean up any existing state
-	_ = state.CleanupApprovalState(workspaceID)
-	defer state.CleanupApprovalState(workspaceID)
+	_ = state.CleanupApprovalState(configDir, workspaceID)
+	defer state.CleanupApprovalState(configDir, workspaceID)
 
-	// Call handleApprovalRequest in a goroutine (it will block waiting for response)
 	done := make(chan struct{})
 	go func() {
-		handleApprovalRequest(workspaceID, agent, command, timeout, w)
+		handleApprovalRequest(workspaceID, agent, command, configDir, timeout, w)
 		close(done)
 	}()
 
-	// Wait for timeout + small buffer
 	select {
 	case <-done:
-		// Expected - function should complete after timeout
 	case <-time.After(timeout + 500*time.Millisecond):
 		t.Fatal("handleApprovalRequest did not complete within expected time")
 	}
 
-	// Verify "n\n" was injected (auto-reject on timeout)
 	buf := make([]byte, 2)
 	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	n, err := r.Read(buf)
@@ -129,14 +119,13 @@ func TestHandleApprovalRequest_AutoReject(t *testing.T) {
 }
 
 func TestHandleApprovalRequest_Approve(t *testing.T) {
-	// This test verifies that when an approval response is written, it's read and injected
+	configDir := t.TempDir()
 
 	workspaceID := "test-workspace-approve"
 	agent := "claude"
 	command := "git status"
 	timeout := 5 * time.Second
 
-	// Create a pipe to capture injected response
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("failed to create pipe: %v", err)
@@ -144,40 +133,33 @@ func TestHandleApprovalRequest_Approve(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
-	// Clean up any existing state
-	_ = state.CleanupApprovalState(workspaceID)
-	defer state.CleanupApprovalState(workspaceID)
+	_ = state.CleanupApprovalState(configDir, workspaceID)
+	defer state.CleanupApprovalState(configDir, workspaceID)
 
-	// Call handleApprovalRequest in a goroutine
 	done := make(chan struct{})
 	go func() {
-		handleApprovalRequest(workspaceID, agent, command, timeout, w)
+		handleApprovalRequest(workspaceID, agent, command, configDir, timeout, w)
 		close(done)
 	}()
 
-	// Wait a moment for the request to be written
 	time.Sleep(100 * time.Millisecond)
 
-	// Write an approval response
 	resp := state.ApprovalResponse{
 		RequestID:   "test-req-id",
 		Approved:    true,
 		RespondedAt: time.Now(),
 		RespondedBy: "test-user",
 	}
-	if err := state.WriteApprovalResponse(workspaceID, resp); err != nil {
+	if err := state.WriteApprovalResponse(configDir, workspaceID, resp); err != nil {
 		t.Fatalf("failed to write approval response: %v", err)
 	}
 
-	// Wait for the handler to process the response
 	select {
 	case <-done:
-		// Expected
 	case <-time.After(2 * time.Second):
 		t.Fatal("handleApprovalRequest did not complete within expected time")
 	}
 
-	// Verify "y\n" was injected (approval)
 	buf := make([]byte, 2)
 	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	n, err := r.Read(buf)
@@ -190,14 +172,13 @@ func TestHandleApprovalRequest_Approve(t *testing.T) {
 }
 
 func TestHandleApprovalRequest_Reject(t *testing.T) {
-	// This test verifies that when a rejection response is written, it's read and injected
+	configDir := t.TempDir()
 
 	workspaceID := "test-workspace-reject"
 	agent := "claude"
 	command := "rm -rf /"
 	timeout := 5 * time.Second
 
-	// Create a pipe to capture injected response
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("failed to create pipe: %v", err)
@@ -205,22 +186,18 @@ func TestHandleApprovalRequest_Reject(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
-	// Clean up any existing state
-	_ = state.CleanupApprovalState(workspaceID)
-	defer state.CleanupApprovalState(workspaceID)
+	_ = state.CleanupApprovalState(configDir, workspaceID)
+	defer state.CleanupApprovalState(configDir, workspaceID)
 
-	// Call handleApprovalRequest in a goroutine
 	done := make(chan struct{})
 	go func() {
-		handleApprovalRequest(workspaceID, agent, command, timeout, w)
+		handleApprovalRequest(workspaceID, agent, command, configDir, timeout, w)
 		close(done)
 	}()
 
-	// Wait a moment for the request to be written
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify the request was written with correct risk level
-	req, err := state.ReadPendingApproval(workspaceID)
+	req, err := state.ReadPendingApproval(configDir, workspaceID)
 	if err != nil {
 		t.Fatalf("failed to read pending approval: %v", err)
 	}
@@ -231,26 +208,22 @@ func TestHandleApprovalRequest_Reject(t *testing.T) {
 		t.Errorf("expected Dangerous risk level, got %v", req.RiskLevel)
 	}
 
-	// Write a rejection response
 	resp := state.ApprovalResponse{
 		RequestID:   req.ID,
 		Approved:    false,
 		RespondedAt: time.Now(),
 		RespondedBy: "test-user",
 	}
-	if err := state.WriteApprovalResponse(workspaceID, resp); err != nil {
+	if err := state.WriteApprovalResponse(configDir, workspaceID, resp); err != nil {
 		t.Fatalf("failed to write approval response: %v", err)
 	}
 
-	// Wait for the handler to process the response
 	select {
 	case <-done:
-		// Expected
 	case <-time.After(2 * time.Second):
 		t.Fatal("handleApprovalRequest did not complete within expected time")
 	}
 
-	// Verify "n\n" was injected (rejection)
 	buf := make([]byte, 2)
 	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 	n, err := r.Read(buf)
@@ -289,10 +262,8 @@ func TestInjectResponse(t *testing.T) {
 			defer r.Close()
 			defer w.Close()
 
-			// Inject response
 			injectResponse(w, tt.approved)
 
-			// Read back
 			buf := make([]byte, 2)
 			r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 			n, err := r.Read(buf)
