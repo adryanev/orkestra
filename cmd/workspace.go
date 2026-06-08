@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/adryanev/orkestra/pkg/mcp"
 	"github.com/adryanev/orkestra/pkg/workspace"
 	"github.com/spf13/cobra"
 )
@@ -113,6 +114,73 @@ var workspaceRemoveCmd = &cobra.Command{
 	},
 }
 
+var workspaceListPendingCmd = &cobra.Command{
+	Use:   "list-pending",
+	Short: "List workspaces with pending ask_user questions",
+	Long: `List all workspaces that currently have an unanswered ask_user question.
+
+Use 'orkestra resume --workspace <id> --answer <text>' to deliver an answer
+and continue the suspended agent.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		configDir := getConfigDir()
+		workspaces, err := wm.ListWorkspaces()
+		if err != nil {
+			emitError(fmt.Errorf("failed to list workspaces: %w", err))
+			return
+		}
+
+		type pendingEntry struct {
+			WorkspaceID string   `json:"workspace_id"`
+			Name        string   `json:"name,omitempty"`
+			Question    string   `json:"question"`
+			Options     []string `json:"options,omitempty"`
+			AskedAt     string   `json:"asked_at"`
+		}
+
+		var entries []pendingEntry
+		for _, ws := range workspaces {
+			q, err := mcp.ReadPending(configDir, ws.ID)
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to read pending for workspace %s: %v\n", ws.ID, err)
+				continue
+			}
+			if q == nil {
+				continue
+			}
+			entries = append(entries, pendingEntry{
+				WorkspaceID: ws.ID,
+				Name:        ws.Name,
+				Question:    q.Question,
+				Options:     q.Options,
+				AskedAt:     q.AskedAt.Format("2006-01-02T15:04:05Z"),
+			})
+		}
+
+		if jsonOutput {
+			if entries == nil {
+				entries = []pendingEntry{}
+			}
+			emitResult("", entries)
+			return
+		}
+
+		if len(entries) == 0 {
+			fmt.Println("No pending questions")
+			return
+		}
+		for _, e := range entries {
+			displayID := e.WorkspaceID
+			if len(displayID) > 8 {
+				displayID = displayID[:8]
+			}
+			fmt.Printf("  %s | %s | %s | %s\n", displayID, e.Name, e.AskedAt, e.Question)
+			if len(e.Options) > 0 {
+				fmt.Printf("    Options: %s\n", strings.Join(e.Options, ", "))
+			}
+		}
+	},
+}
+
 func init() {
 	workspaceCreateCmd.Flags().StringVar(&workspaceRepo, "repo", "", "Repository path")
 	workspaceCreateCmd.Flags().StringVar(&workspaceName, "name", "", "Workspace name")
@@ -126,4 +194,5 @@ func init() {
 	workspaceCmd.AddCommand(workspaceCreateCmd)
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceRemoveCmd)
+	workspaceCmd.AddCommand(workspaceListPendingCmd)
 }

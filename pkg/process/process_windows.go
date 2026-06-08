@@ -8,8 +8,10 @@ package process
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -37,7 +39,7 @@ func Alive(pid int) bool {
 		return false
 	}
 	// If PID is in output, process exists
-	return len(out) > 0
+	return strings.Contains(string(out), fmt.Sprintf("%d", pid))
 }
 
 // StartedAt returns an OS-derived process-start token for pid.
@@ -49,31 +51,70 @@ func StartedAt(pid int) (int64, error) {
 	if runtime.GOOS != "windows" {
 		return 0, fmt.Errorf("process identity unsupported on %s", runtime.GOOS)
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	
-	cmd := exec.CommandContext(ctx, "wmic", "process", 
-		fmt.Sprintf("where \"ProcessId=%d\"", pid), 
-		"get", "CreationDate")
-	_, err := cmd.Output()
+
+	cmd := exec.CommandContext(ctx, "wmic", "process",
+		"where", fmt.Sprintf("ProcessId=%d", pid),
+		"get", "CreationDate", "/value")
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
 	}
-	
-	// Parse WMIC date format: 20250107120000.000000-000
-	// Simplified: just return current time as fallback
-	return time.Now().UnixNano(), nil
+
+	creationDate, err := parseWMICCreationDate(out, pid)
+	if err != nil {
+		return 0, err
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(creationDate))
+	token := int64(hash.Sum64() & (1<<63 - 1))
+	if token == 0 {
+		token = 1
+	}
+	return token, nil
+}
+
+func parseWMICCreationDate(out []byte, pid int) (string, error) {
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.EqualFold(line, "CreationDate") {
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "CreationDate="); ok {
+			line = strings.TrimSpace(value)
+		}
+		if line != "" {
+			return line, nil
+		}
+	}
+	return "", fmt.Errorf("missing creation date for pid %d", pid)
 }
 
 // IdentityMatches verifies that pid is still the process that was
-// recorded at spawn time. Windows implementation is simplified.
+// recorded at spawn time.
 func IdentityMatches(pid int, pgid int, startedAt int64) bool {
 	if pid <= 0 || startedAt <= 0 {
 		return false
 	}
-	// On Windows, pgid is not used - just check if process exists
-	return Alive(pid)
+	if pgid > 0 && pgid != pid {
+		return false
+	}
+	currentStartedAt, err := StartedAt(pid)
+	if err != nil {
+		return false
+	}
+	return currentStartedAt == startedAt
+}
+
+// GroupID returns pid as the termination target on Windows. Callers persist
+// StartedAt separately to distinguish a recycled PID from the original process.
+func GroupID(pid int) (int, error) {
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid pid %d", pid)
+	}
+	return pid, nil
 }
 
 // TerminateGroup terminates a process on Windows.
@@ -82,7 +123,7 @@ func TerminateGroup(pid int, grace time.Duration) error {
 	if pid <= 0 {
 		return nil
 	}
-	
+
 	// First try graceful termination
 	cmd := exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid))
 	if err := cmd.Run(); err != nil {

@@ -134,6 +134,13 @@ func groupAlive(pgid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
+// GroupID returns the process group ID of pid as reported by the kernel.
+// Use this immediately after cmd.Start() to capture the real pgid rather than
+// assuming pgid == pid (even when Setpgid is set).
+func GroupID(pid int) (int, error) {
+	return syscall.Getpgid(pid)
+}
+
 // TerminateGroup terminates the process group led by pgid. It sends SIGTERM,
 // waits up to grace for the group leader to exit, then sends SIGKILL if the
 // leader is still alive. A group that no longer exists (ESRCH) is treated as

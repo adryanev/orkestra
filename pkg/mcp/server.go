@@ -86,6 +86,18 @@ type notifyInput struct {
 	Message string `json:"message" jsonschema:"message to append to the workspace log"`
 }
 
+type askUserInput struct {
+	ID       string   `json:"id" jsonschema:"required,registered workspace id"`
+	Question string   `json:"question" jsonschema:"required,question to ask the user"`
+	Options  []string `json:"options,omitempty" jsonschema:"optional list of answer choices"`
+}
+
+type askUserOutput struct {
+	Message     string `json:"message"`
+	WorkspaceID string `json:"workspace_id"`
+	Question    string `json:"question"`
+}
+
 type messageOutput struct {
 	Message string `json:"message"`
 }
@@ -121,6 +133,7 @@ func (s *Server) register(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_workspace_info", Description: "Return path, branch, and status for a workspace."}, s.getWorkspaceInfo)
 	mcp.AddTool(srv, &mcp.Tool{Name: "rename_branch", Description: "Rename the git branch of a workspace."}, s.renameBranch)
 	mcp.AddTool(srv, &mcp.Tool{Name: "notify", Description: "Append a message to the workspace log file."}, s.notify)
+	mcp.AddTool(srv, &mcp.Tool{Name: "ask_user", Description: "Ask the orchestrating user a question and suspend until they answer."}, s.askUser)
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_goto_definition", Description: "Go to the definition of the symbol at a position."}, s.lspGotoDefinition)
 	mcp.AddTool(srv, &mcp.Tool{Name: "lsp_find_references", Description: "Find references to the symbol at a position."}, s.lspFindReferences)
@@ -196,6 +209,32 @@ func (s *Server) notify(ctx context.Context, _ *mcp.CallToolRequest, in notifyIn
 	}
 	msg := fmt.Sprintf("Notification logged to %s", path)
 	return text(msg), messageOutput{Message: msg}, nil
+}
+
+func (s *Server) askUser(ctx context.Context, _ *mcp.CallToolRequest, in askUserInput) (*mcp.CallToolResult, askUserOutput, error) {
+	if err := s.requireBoundWorkspace(in.ID); err != nil {
+		return nil, askUserOutput{}, err
+	}
+
+	// Build and write pending question
+	q := PendingQuestion{
+		WorkspaceID: in.ID,
+		Question:    in.Question,
+		Options:     in.Options,
+		AskedAt:     time.Now().UTC(),
+	}
+
+	if err := WritePending(s.wm.ConfigDir(), in.ID, q); err != nil {
+		return nil, askUserOutput{}, fmt.Errorf("failed to write pending question: %w", err)
+	}
+
+	msg := fmt.Sprintf("Question pending for workspace %s. The agent will be suspended shortly.", in.ID)
+	out := askUserOutput{
+		Message:     msg,
+		WorkspaceID: in.ID,
+		Question:    in.Question,
+	}
+	return text(msg), out, nil
 }
 
 // --- LSP tools ---
