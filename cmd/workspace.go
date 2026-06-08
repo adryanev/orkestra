@@ -123,7 +123,7 @@ Use 'orkestra resume --workspace <id> --answer <text>' to deliver an answer
 and continue the suspended agent.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		configDir := getConfigDir()
-		workspaces, err := wm.ListWorkspaces()
+		workspaces, err := workspaceManager.ListWorkspaces()
 		if err != nil {
 			emitError(fmt.Errorf("failed to list workspaces: %w", err))
 			return

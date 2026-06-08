@@ -25,7 +25,7 @@ var (
 )
 
 func ensureAnswerResumeHasNoLiveAgent(workspaceID string) error {
-	session, err := wm.GetSession(workspaceID)
+	session, err := workspaceManager.GetSession(workspaceID)
 	if err != nil {
 		return fmt.Errorf("get session for workspace %s: %w", workspaceID, err)
 	}
@@ -74,7 +74,7 @@ the synthesized answer context.`,
 		}
 
 		// Validate workspace exists in registry before any I/O
-		if _, err := wm.GetWorkspace(resumeWorkspace); err != nil {
+		if _, err := workspaceManager.GetWorkspace(resumeWorkspace); err != nil {
 			emitError(fmt.Errorf("workspace %q not found: %w", resumeWorkspace, err))
 			return
 		}
