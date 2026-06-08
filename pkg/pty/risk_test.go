@@ -136,9 +136,9 @@ func TestClassifyRisk_Safe(t *testing.T) {
 
 func TestClassifyRisk_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name       string
-		command    string
-		wantRisk   RiskLevel
+		name     string
+		command  string
+		wantRisk RiskLevel
 	}{
 		{"quoted dangerous command", "echo 'rm -rf /'", Safe},
 		{"dangerous in single quotes", "echo 'sudo apt install'", Safe},
@@ -161,6 +161,9 @@ func TestClassifyRisk_EdgeCases(t *testing.T) {
 		{"background job safe", "sleep 10 &", Safe},
 		{"and operator safe", "make build && make test", Moderate},
 		{"or operator safe", "npm install || yarn install", Moderate},
+		{"ansi wrapped dangerous command", "\x1b[31mrm -rf /\x1b[0m", Dangerous},
+		{"ansi embedded dangerous command", "r\x1b[31mm -rf /", Dangerous},
+		{"ansi wrapped safe command", "\x1b[32mgit status\x1b[0m", Safe},
 	}
 
 	for _, tt := range tests {

@@ -19,6 +19,21 @@ import (
 // unixSocketMaxLen is the platform limit for Unix socket paths.
 const unixSocketMaxLen = 108
 
+func ptySocketPathForWorkspace(workspaceID string) (string, error) {
+	socketPath := filepath.Join(configDir, "pty", workspaceID+".sock")
+	if len(socketPath) <= unixSocketMaxLen {
+		return socketPath, nil
+	}
+
+	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("orkestra-pty-%d", os.Getuid()))
+	socketPath = filepath.Join(tmpDir, workspaceID+".sock")
+	if len(socketPath) > unixSocketMaxLen {
+		return "", fmt.Errorf("socket path too long (>%d bytes): %s", unixSocketMaxLen, socketPath)
+	}
+
+	return socketPath, nil
+}
+
 var (
 	ptyDaemonWorkspace string
 	ptyDaemonAgent     string
@@ -89,24 +104,20 @@ var ptyDaemonCmd = &cobra.Command{
 			emitError(fmt.Errorf("failed to build agent command: %w", err))
 		}
 
-		// Derive socket path: ~/.orkestra/pty/<ws-id>.sock
-		socketPath := filepath.Join(configDir, "pty", ptyDaemonWorkspace+".sock")
-
-		// Check Unix socket path length limit (≤ 108 bytes on most systems)
-		if len(socketPath) > unixSocketMaxLen {
-			// Fallback: $TMPDIR/orkestra-<id>.sock
-			tmpDir := os.TempDir()
-			socketPath = filepath.Join(tmpDir, "orkestra-"+ptyDaemonWorkspace+".sock")
-
-			if len(socketPath) > unixSocketMaxLen {
-				emitError(fmt.Errorf("socket path too long (>%d bytes): %s", unixSocketMaxLen, socketPath))
-			}
+		// Derive socket path: ~/.orkestra/pty/<ws-id>.sock, falling back to
+		// a private temp subdirectory when the config path is too long.
+		socketPath, err := ptySocketPathForWorkspace(ptyDaemonWorkspace)
+		if err != nil {
+			emitError(err)
 		}
 
-		// Ensure socket directory exists
+		// Ensure socket directory exists and is private before listening.
 		socketDir := filepath.Dir(socketPath)
-		if err := os.MkdirAll(socketDir, 0755); err != nil {
+		if err := os.MkdirAll(socketDir, 0700); err != nil {
 			emitError(fmt.Errorf("failed to create socket directory: %w", err))
+		}
+		if err := os.Chmod(socketDir, 0700); err != nil {
+			emitError(fmt.Errorf("failed to restrict socket directory: %w", err))
 		}
 
 		// Run the PTY daemon

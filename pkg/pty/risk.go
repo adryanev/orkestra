@@ -4,6 +4,7 @@ package pty
 import (
 	"strings"
 
+	"github.com/acarl005/stripansi"
 	"github.com/adryanev/orkestra/pkg/risk"
 )
 
@@ -22,28 +23,28 @@ const (
 
 // dangerousCommands are commands that can cause irreversible damage or security issues.
 var dangerousCommands = map[string]bool{
-	"rm":       true,
-	"dd":       true,
-	"mkfs":     true,
-	"fdisk":    true,
-	"parted":   true,
-	"shutdown": true,
-	"reboot":   true,
-	"halt":     true,
-	"poweroff": true,
-	"init":     true,
-	"iptables": true,
+	"rm":        true,
+	"dd":        true,
+	"mkfs":      true,
+	"fdisk":     true,
+	"parted":    true,
+	"shutdown":  true,
+	"reboot":    true,
+	"halt":      true,
+	"poweroff":  true,
+	"init":      true,
+	"iptables":  true,
 	"ip6tables": true,
-	"sudo":     true,
-	"su":       true,
-	"chown":    true,
-	"chmod":    true,
-	"kill":     true,
-	"killall":  true,
-	"pkill":    true,
-	"format":   true,
-	"del":      true, // Windows
-	"erase":    true, // Windows
+	"sudo":      true,
+	"su":        true,
+	"chown":     true,
+	"chmod":     true,
+	"kill":      true,
+	"killall":   true,
+	"pkill":     true,
+	"format":    true,
+	"del":       true, // Windows
+	"erase":     true, // Windows
 }
 
 // moderateCommands are commands that modify state but are generally recoverable.
@@ -160,7 +161,8 @@ func ClassifyRisk(command string) risk.Level {
 		return Safe
 	}
 
-	tokens := tokenize(command)
+	clean := stripansi.Strip(command)
+	tokens := tokenize(clean)
 	if len(tokens) == 0 {
 		return Safe
 	}

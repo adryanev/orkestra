@@ -95,6 +95,26 @@ func sendAttach(t *testing.T, conn net.Conn) {
 	}
 }
 
+func TestEnsureSocketDirRestrictsPermissions(t *testing.T) {
+	parent := t.TempDir()
+	socketDir := filepath.Join(parent, "pty")
+	if err := os.MkdirAll(socketDir, 0755); err != nil {
+		t.Fatalf("failed to create socket dir: %v", err)
+	}
+
+	if err := ensureSocketDir(filepath.Join(socketDir, "test.sock")); err != nil {
+		t.Fatalf("ensureSocketDir failed: %v", err)
+	}
+
+	info, err := os.Stat(socketDir)
+	if err != nil {
+		t.Fatalf("failed to stat socket dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Fatalf("socket dir permissions = %04o, want 0700", got)
+	}
+}
+
 // TestDaemon_HappyPath tests the basic daemon functionality with 'cat' as agent
 func TestDaemon_HappyPath(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)

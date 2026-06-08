@@ -1,10 +1,14 @@
 package pty
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 )
+
+const protocolScannerMaxLine = 1024 * 1024
 
 // Message types for PTY protocol.
 const (
@@ -81,4 +85,10 @@ func DecodeData(encoded string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decode base64 data: %w", err)
 	}
 	return data, nil
+}
+
+func newProtocolScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), protocolScannerMaxLine)
+	return scanner
 }

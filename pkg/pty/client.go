@@ -3,7 +3,6 @@
 package pty
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -106,7 +105,7 @@ func RunAttach(ctx context.Context, socketPath string, stdinFd int, stdout io.Wr
 	}
 
 	// Receive MsgReady and MsgBuffer
-	scanner := bufio.NewScanner(conn)
+	scanner := newProtocolScanner(conn)
 
 	// Read MsgReady
 	if !scanner.Scan() {

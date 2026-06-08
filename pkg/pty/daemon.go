@@ -3,7 +3,6 @@
 package pty
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -141,6 +141,12 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	}
 
 	// 8. Create Unix socket
+	if err := ensureSocketDir(cfg.SocketPath); err != nil {
+		_ = process.TerminateGroup(pgid, process.DefaultGrace)
+		_ = cfg.AgentCmd.Wait()
+		return fmt.Errorf("failed to prepare socket directory: %w", err)
+	}
+
 	// Remove stale socket if it exists
 	_ = os.Remove(cfg.SocketPath)
 
@@ -177,6 +183,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 
 	var wg sync.WaitGroup
 	var clientWg sync.WaitGroup // tracks individual handleClient goroutines
+	var approvalWg sync.WaitGroup
 	var clientMu sync.Mutex
 	var currentClient net.Conn
 	agentDone := make(chan struct{})
@@ -198,12 +205,14 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 				// Process data for prompt detection if enabled
 				if cfg.EnableAutoApprove {
 					processedData := processWithPromptDetection(
+						daemonCtx,
 						data,
 						&lineBuffer,
 						cfg.WorkspaceID,
 						configDir,
 						cfg.ApprovalTimeout,
 						master,
+						&approvalWg,
 					)
 
 					// Write processed data (original or modified) to ring buffer
@@ -315,12 +324,17 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 			clientWg.Add(1)
 			go func(c net.Conn) {
 				defer clientWg.Done()
-				// When the daemon context is cancelled, unblock any blocking
-				// read/write on this connection within 5 seconds.
+				clientDone := make(chan struct{})
+				defer close(clientDone)
+
 				go func() {
-					<-daemonCtx.Done()
-					_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+					select {
+					case <-daemonCtx.Done():
+						_ = c.SetDeadline(time.Now())
+					case <-clientDone:
+					}
 				}()
+
 				handleClient(daemonCtx, c, &session, ring, &clientMu, &currentClient, master)
 			}(conn)
 		}
@@ -350,6 +364,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	// then for any in-flight client handlers.
 	wg.Wait()
 	clientWg.Wait()
+	approvalWg.Wait()
 
 	return nil
 }
@@ -391,7 +406,7 @@ func handleClient(
 	}()
 
 	// Read MsgAttach from the client, which carries the initial terminal size.
-	scanner := bufio.NewScanner(conn)
+	scanner := newProtocolScanner(conn)
 	if !scanner.Scan() {
 		return
 	}
@@ -461,15 +476,17 @@ func handleClient(
 }
 
 // processWithPromptDetection processes PTY output data, buffering lines to detect
-// permission prompts. When a prompt is detected, it triggers the approval workflow
-// and injects the response back to the PTY.
+// permission prompts. When a prompt is detected, it starts the approval workflow
+// without blocking the PTY reader.
 func processWithPromptDetection(
+	ctx context.Context,
 	data []byte,
 	lineBuffer *bytes.Buffer,
 	workspaceID string,
 	configDir string,
 	timeout time.Duration,
 	master *os.File,
+	approvalWg *sync.WaitGroup,
 ) []byte {
 	// Buffer the incoming data
 	lineBuffer.Write(data)
@@ -492,14 +509,14 @@ func processWithPromptDetection(
 	for i := 0; i < len(lines)-1; i++ {
 		line := lines[i]
 		if detected, agent, command := DetectPrompt(line); detected {
-			handleApprovalRequest(workspaceID, agent, command, configDir, timeout, master)
+			handleApprovalRequest(ctx, workspaceID, agent, command, configDir, timeout, master, approvalWg)
 		}
 	}
 
 	// Also check the incomplete line for prompts (some prompts don't end with newline)
 	if lastLine != "" {
 		if detected, agent, command := DetectPrompt(lastLine); detected {
-			handleApprovalRequest(workspaceID, agent, command, configDir, timeout, master)
+			handleApprovalRequest(ctx, workspaceID, agent, command, configDir, timeout, master, approvalWg)
 			lineBuffer.Reset()
 		}
 	}
@@ -508,22 +525,28 @@ func processWithPromptDetection(
 	return data
 }
 
-// handleApprovalRequest orchestrates the approval workflow:
+// handleApprovalRequest starts the approval workflow without blocking the PTY
+// reader. It writes the pending request synchronously, then waits for the
+// response in a cancellable worker.
+//
+// Approval workflow:
 // 1. Classify risk
 // 2. Create approval request
 // 3. Write to pending state
 // 4. Audit log the request
-// 5. Wait for response (with timeout)
+// 5. Wait for response asynchronously (with timeout)
 // 6. Inject approval/rejection to PTY
 // 7. Audit log the outcome
 // 8. Cleanup state
 func handleApprovalRequest(
+	ctx context.Context,
 	workspaceID string,
 	agent string,
 	command string,
 	configDir string,
 	timeout time.Duration,
 	master *os.File,
+	approvalWg *sync.WaitGroup,
 ) {
 	riskLevel := ClassifyRisk(command)
 	req := state.NewApprovalRequest(workspaceID, agent, command, riskLevel, timeout)
@@ -538,55 +561,85 @@ func handleApprovalRequest(
 		fmt.Fprintf(os.Stderr, "[daemon] failed to audit log request: %v\n", err)
 	}
 
-	response := waitForApprovalResponse(configDir, workspaceID, timeout)
+	if approvalWg != nil {
+		approvalWg.Add(1)
+	}
+	go func() {
+		if approvalWg != nil {
+			defer approvalWg.Done()
+		}
+		finishApprovalRequest(ctx, configDir, req, master)
+	}()
+}
+
+func finishApprovalRequest(ctx context.Context, configDir string, req state.ApprovalRequest, master *os.File) {
+	timeout := time.Until(req.TimeoutAt)
+	response, timedOut := waitForApprovalResponse(ctx, configDir, req.WorkspaceID, timeout)
+
+	defer func() {
+		if err := state.CleanupApprovalState(configDir, req.WorkspaceID); err != nil {
+			fmt.Fprintf(os.Stderr, "[daemon] failed to cleanup approval state: %v\n", err)
+		}
+	}()
 
 	if response == nil {
-		fmt.Fprintf(os.Stderr, "[daemon] approval timeout for command: %s\n", command)
+		if !timedOut {
+			fmt.Fprintf(os.Stderr, "[daemon] approval canceled for command: %s\n", req.Command)
+			return
+		}
+
+		fmt.Fprintf(os.Stderr, "[daemon] approval timeout for command: %s\n", req.Command)
 		injectResponse(master, false)
-		if err := audit.LogTimeout(configDir, workspaceID, agent, command, req.ID, riskLevel); err != nil {
+		if err := audit.LogTimeout(configDir, req.WorkspaceID, req.Agent, req.Command, req.ID, req.RiskLevel); err != nil {
 			fmt.Fprintf(os.Stderr, "[daemon] failed to audit log timeout: %v\n", err)
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "[daemon] approval response: approved=%v for command: %s\n", response.Approved, command)
-		injectResponse(master, response.Approved)
-		if response.Approved {
-			if err := audit.LogApprove(configDir, workspaceID, agent, command, req.ID, response.RespondedBy, riskLevel); err != nil {
-				fmt.Fprintf(os.Stderr, "[daemon] failed to audit log approval: %v\n", err)
-			}
-		} else {
-			if err := audit.LogReject(configDir, workspaceID, agent, command, req.ID, response.RespondedBy, riskLevel); err != nil {
-				fmt.Fprintf(os.Stderr, "[daemon] failed to audit log rejection: %v\n", err)
-			}
-		}
+		return
 	}
 
-	if err := state.CleanupApprovalState(configDir, workspaceID); err != nil {
-		fmt.Fprintf(os.Stderr, "[daemon] failed to cleanup approval state: %v\n", err)
+	fmt.Fprintf(os.Stderr, "[daemon] approval response: approved=%v for command: %s\n", response.Approved, req.Command)
+	injectResponse(master, response.Approved)
+	if response.Approved {
+		if err := audit.LogApprove(configDir, req.WorkspaceID, req.Agent, req.Command, req.ID, response.RespondedBy, req.RiskLevel); err != nil {
+			fmt.Fprintf(os.Stderr, "[daemon] failed to audit log approval: %v\n", err)
+		}
+	} else {
+		if err := audit.LogReject(configDir, req.WorkspaceID, req.Agent, req.Command, req.ID, response.RespondedBy, req.RiskLevel); err != nil {
+			fmt.Fprintf(os.Stderr, "[daemon] failed to audit log rejection: %v\n", err)
+		}
 	}
 }
 
 // waitForApprovalResponse polls for an approval response with timeout.
-// Returns nil on timeout, otherwise returns the response.
-func waitForApprovalResponse(configDir, workspaceID string, timeout time.Duration) *state.ApprovalResponse {
-	deadline := time.Now().Add(timeout)
-	pollInterval := 100 * time.Millisecond
+// Returns nil with timedOut=true on timeout and nil with timedOut=false on
+// context cancellation.
+func waitForApprovalResponse(ctx context.Context, configDir, workspaceID string, timeout time.Duration) (*state.ApprovalResponse, bool) {
+	if timeout <= 0 {
+		return nil, true
+	}
 
-	for time.Now().Before(deadline) {
+	pollInterval := 100 * time.Millisecond
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
 		response, err := state.ReadApprovalResponse(configDir, workspaceID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[daemon] error reading approval response: %v\n", err)
-			time.Sleep(pollInterval)
-			continue
+		} else if response != nil {
+			return response, false
 		}
 
-		if response != nil {
-			return response
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-timer.C:
+			return nil, true
+		case <-ticker.C:
 		}
-
-		time.Sleep(pollInterval)
 	}
-
-	return nil
 }
 
 // injectResponse injects an approval response ("y" or "n") to the PTY master stdin.
@@ -601,4 +654,35 @@ func injectResponse(master *os.File, approved bool) {
 	if _, err := master.Write([]byte(response)); err != nil {
 		fmt.Fprintf(os.Stderr, "[daemon] failed to inject approval response: %v\n", err)
 	}
+}
+
+func ensureSocketDir(socketPath string) error {
+	socketDir := filepath.Dir(socketPath)
+	cleanedDir := filepath.Clean(socketDir)
+	if cleanedDir == "." || cleanedDir == string(os.PathSeparator) {
+		return fmt.Errorf("socket directory must be an explicit private directory: %s", socketDir)
+	}
+	if cleanedDir == filepath.Clean(os.TempDir()) {
+		return fmt.Errorf("socket directory must not be the shared temp directory: %s", socketDir)
+	}
+
+	if err := os.MkdirAll(socketDir, 0700); err != nil {
+		return fmt.Errorf("create socket directory: %w", err)
+	}
+	if err := os.Chmod(socketDir, 0700); err != nil {
+		return fmt.Errorf("chmod socket directory: %w", err)
+	}
+
+	info, err := os.Stat(socketDir)
+	if err != nil {
+		return fmt.Errorf("stat socket directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("socket path parent is not a directory: %s", socketDir)
+	}
+	if info.Mode().Perm() != 0700 {
+		return fmt.Errorf("socket directory permissions are %04o, want 0700", info.Mode().Perm())
+	}
+
+	return nil
 }

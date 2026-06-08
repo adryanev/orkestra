@@ -4,7 +4,9 @@ package pty
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +26,7 @@ func TestProcessWithPromptDetection(t *testing.T) {
 	}{
 		{
 			name:           "Claude bash command prompt",
-			input:          "Allow claude to execute this Bash command?\n  git status\n",
+			input:          "Allow claude to execute this Bash command? git status\n",
 			expectDetected: true,
 			expectedAgent:  "claude",
 			expectedCmd:    "git status",
@@ -52,6 +54,14 @@ func TestProcessWithPromptDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			workspaceID := "test-workspace"
+			_ = state.CleanupApprovalState(configDir, workspaceID)
+			defer state.CleanupApprovalState(configDir, workspaceID)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var approvalWg sync.WaitGroup
 			var lineBuffer bytes.Buffer
 
 			r, w, err := os.Pipe()
@@ -61,18 +71,45 @@ func TestProcessWithPromptDetection(t *testing.T) {
 			defer r.Close()
 			defer w.Close()
 
+			start := time.Now()
 			result := processWithPromptDetection(
+				ctx,
 				[]byte(tt.input),
 				&lineBuffer,
-				"test-workspace",
+				workspaceID,
 				configDir,
-				1*time.Second,
+				5*time.Second,
 				w,
+				&approvalWg,
 			)
+			if time.Since(start) > 200*time.Millisecond {
+				t.Fatal("processWithPromptDetection blocked on approval request")
+			}
 
 			if string(result) != tt.input {
 				t.Errorf("expected unchanged output, got %q", result)
 			}
+
+			req, err := state.ReadPendingApproval(configDir, workspaceID)
+			if err != nil {
+				t.Fatalf("failed to read pending approval: %v", err)
+			}
+			if tt.expectDetected {
+				if req == nil {
+					t.Fatal("expected pending approval to exist")
+				}
+				if req.Agent != tt.expectedAgent {
+					t.Errorf("agent = %q, want %q", req.Agent, tt.expectedAgent)
+				}
+				if req.Command != tt.expectedCmd {
+					t.Errorf("command = %q, want %q", req.Command, tt.expectedCmd)
+				}
+			} else if req != nil {
+				t.Fatalf("unexpected pending approval: %+v", req)
+			}
+
+			cancel()
+			approvalWg.Wait()
 		})
 	}
 }
@@ -95,20 +132,21 @@ func TestHandleApprovalRequest_AutoReject(t *testing.T) {
 	_ = state.CleanupApprovalState(configDir, workspaceID)
 	defer state.CleanupApprovalState(configDir, workspaceID)
 
+	var approvalWg sync.WaitGroup
 	done := make(chan struct{})
 	go func() {
-		handleApprovalRequest(workspaceID, agent, command, configDir, timeout, w)
+		handleApprovalRequest(context.Background(), workspaceID, agent, command, configDir, timeout, w, &approvalWg)
 		close(done)
 	}()
 
 	select {
 	case <-done:
-	case <-time.After(timeout + 500*time.Millisecond):
-		t.Fatal("handleApprovalRequest did not complete within expected time")
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleApprovalRequest blocked instead of returning immediately")
 	}
 
 	buf := make([]byte, 2)
-	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	r.SetReadDeadline(time.Now().Add(timeout + 500*time.Millisecond))
 	n, err := r.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read injected response: %v", err)
@@ -116,6 +154,7 @@ func TestHandleApprovalRequest_AutoReject(t *testing.T) {
 	if n != 2 || string(buf[:n]) != "n\n" {
 		t.Errorf("expected 'n\\n', got %q", buf[:n])
 	}
+	approvalWg.Wait()
 }
 
 func TestHandleApprovalRequest_Approve(t *testing.T) {
@@ -136,16 +175,19 @@ func TestHandleApprovalRequest_Approve(t *testing.T) {
 	_ = state.CleanupApprovalState(configDir, workspaceID)
 	defer state.CleanupApprovalState(configDir, workspaceID)
 
-	done := make(chan struct{})
-	go func() {
-		handleApprovalRequest(workspaceID, agent, command, configDir, timeout, w)
-		close(done)
-	}()
+	var approvalWg sync.WaitGroup
+	handleApprovalRequest(context.Background(), workspaceID, agent, command, configDir, timeout, w, &approvalWg)
 
-	time.Sleep(100 * time.Millisecond)
+	req, err := state.ReadPendingApproval(configDir, workspaceID)
+	if err != nil {
+		t.Fatalf("failed to read pending approval: %v", err)
+	}
+	if req == nil {
+		t.Fatal("expected pending approval to exist")
+	}
 
 	resp := state.ApprovalResponse{
-		RequestID:   "test-req-id",
+		RequestID:   req.ID,
 		Approved:    true,
 		RespondedAt: time.Now(),
 		RespondedBy: "test-user",
@@ -154,14 +196,8 @@ func TestHandleApprovalRequest_Approve(t *testing.T) {
 		t.Fatalf("failed to write approval response: %v", err)
 	}
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handleApprovalRequest did not complete within expected time")
-	}
-
 	buf := make([]byte, 2)
-	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	r.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := r.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read injected response: %v", err)
@@ -169,6 +205,7 @@ func TestHandleApprovalRequest_Approve(t *testing.T) {
 	if n != 2 || string(buf[:n]) != "y\n" {
 		t.Errorf("expected 'y\\n', got %q", buf[:n])
 	}
+	approvalWg.Wait()
 }
 
 func TestHandleApprovalRequest_Reject(t *testing.T) {
@@ -189,13 +226,8 @@ func TestHandleApprovalRequest_Reject(t *testing.T) {
 	_ = state.CleanupApprovalState(configDir, workspaceID)
 	defer state.CleanupApprovalState(configDir, workspaceID)
 
-	done := make(chan struct{})
-	go func() {
-		handleApprovalRequest(workspaceID, agent, command, configDir, timeout, w)
-		close(done)
-	}()
-
-	time.Sleep(100 * time.Millisecond)
+	var approvalWg sync.WaitGroup
+	handleApprovalRequest(context.Background(), workspaceID, agent, command, configDir, timeout, w, &approvalWg)
 
 	req, err := state.ReadPendingApproval(configDir, workspaceID)
 	if err != nil {
@@ -218,14 +250,8 @@ func TestHandleApprovalRequest_Reject(t *testing.T) {
 		t.Fatalf("failed to write approval response: %v", err)
 	}
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handleApprovalRequest did not complete within expected time")
-	}
-
 	buf := make([]byte, 2)
-	r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	r.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := r.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read injected response: %v", err)
@@ -233,6 +259,7 @@ func TestHandleApprovalRequest_Reject(t *testing.T) {
 	if n != 2 || string(buf[:n]) != "n\n" {
 		t.Errorf("expected 'n\\n', got %q", buf[:n])
 	}
+	approvalWg.Wait()
 }
 
 func TestInjectResponse(t *testing.T) {

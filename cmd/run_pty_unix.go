@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -31,13 +30,9 @@ func runPTYMode(workspaceID string, agent runner.AgentType, prompt, model, effor
 	}
 
 	// Derive socket path (same logic as daemon).
-	socketPath := filepath.Join(configDir, "pty", workspaceID+".sock")
-	if len(socketPath) > unixSocketMaxLen {
-		tmpDir := os.TempDir()
-		socketPath = filepath.Join(tmpDir, "orkestra-"+workspaceID+".sock")
-		if len(socketPath) > unixSocketMaxLen {
-			emitError(fmt.Errorf("socket path too long (>%d bytes): %s", unixSocketMaxLen, socketPath))
-		}
+	socketPath, err := ptySocketPathForWorkspace(workspaceID)
+	if err != nil {
+		emitError(err)
 	}
 
 	// Build daemon invocation.
