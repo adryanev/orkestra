@@ -138,16 +138,6 @@ the synthesized answer context.`,
 			if resumePrompt != "" {
 				prompt = prompt + "\n\n" + resumePrompt
 			}
-		} else {
-			// Normal resume (no --answer)
-			if resumePrompt == "" && len(args) == 0 {
-				emitError(fmt.Errorf("prompt required (--prompt or argument)"))
-				return
-			}
-			prompt = resumePrompt
-			if prompt == "" {
-				prompt = args[0]
-			}
 		}
 
 		var a runner.AgentType
@@ -190,6 +180,17 @@ the synthesized answer context.`,
 				fmt.Fprintf(os.Stderr, "Warning: failed to clear stale PTY session: %v\n", clearErr)
 			}
 			// Fall through to normal resume (which will start a new PTY run if --pty was set).
+		}
+
+		if resumeAnswer == "" {
+			if resumePrompt == "" && len(args) == 0 {
+				emitError(fmt.Errorf("prompt required (--prompt or argument)"))
+				return
+			}
+			prompt = resumePrompt
+			if prompt == "" {
+				prompt = args[0]
+			}
 		}
 
 		sessionInfo, err := agentRunner.Run(resumeWorkspace, a, prompt, true, false, !jsonOutput, resumeModel, resumeEffort)

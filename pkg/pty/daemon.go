@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -31,6 +30,7 @@ type DaemonConfig struct {
 	Manager           *workspace.Manager // Workspace manager for persistence
 	ApprovalTimeout   time.Duration      // Timeout for approval requests (default: 5 minutes)
 	EnableAutoApprove bool               // Enable automatic approval interception (default: false)
+	ExitCode          *int               // Optional destination for the agent process exit code
 }
 
 // PTYSession tracks the PTY master and agent process information.
@@ -83,7 +83,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to allocate PTY: %w", err)
 	}
-	defer master.Close()
+	defer func() { _ = master.Close() }()
 
 	// 2. Set agent command stdio to slave fd
 	cfg.AgentCmd.Stdin = slave
@@ -98,14 +98,14 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 
 	// 4. Start agent and capture PID immediately
 	if err := cfg.AgentCmd.Start(); err != nil {
-		slave.Close()
+		_ = slave.Close()
 		return fmt.Errorf("failed to start agent: %w", err)
 	}
 
 	pid := cfg.AgentCmd.Process.Pid
 	pgid, err := process.PGID(pid)
 	if err != nil {
-		slave.Close()
+		_ = slave.Close()
 		_ = process.TerminateGroup(pid, process.DefaultGrace)
 		_ = cfg.AgentCmd.Wait()
 		return fmt.Errorf("failed to capture agent process group: %w", err)
@@ -115,7 +115,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	fmt.Fprintf(os.Stderr, "[daemon] started agent PID=%d PGID=%d\n", pid, pgid)
 
 	// 5. Close slave in daemon (agent has its own copy)
-	slave.Close()
+	_ = slave.Close()
 
 	// 6. Capture process start time for identity tracking
 	startedAt, err := process.StartedAt(pid)
@@ -157,9 +157,15 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 		return fmt.Errorf("failed to create Unix socket: %w", err)
 	}
 	// Restrict socket access to the owner only.
-	_ = os.Chmod(cfg.SocketPath, 0600)
+	if err := os.Chmod(cfg.SocketPath, 0600); err != nil {
+		_ = listener.Close()
+		_ = os.Remove(cfg.SocketPath)
+		_ = process.TerminateGroup(pgid, process.DefaultGrace)
+		_ = cfg.AgentCmd.Wait()
+		return fmt.Errorf("failed to restrict Unix socket permissions for %s: %w", cfg.SocketPath, err)
+	}
 	defer func() {
-		listener.Close()
+		_ = listener.Close()
 		_ = os.Remove(cfg.SocketPath)
 	}()
 
@@ -187,6 +193,19 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	var clientMu sync.Mutex
 	var currentClient net.Conn
 	agentDone := make(chan struct{})
+
+	writeToCurrentClient := func(msg Msg) {
+		clientMu.Lock()
+		c := currentClient
+		clientMu.Unlock()
+		if c == nil {
+			return
+		}
+		encoded, encErr := Encode(msg)
+		if encErr == nil {
+			_, _ = c.Write(encoded)
+		}
+	}
 
 	// Goroutine A: PTY reader → prompt detection → ring buffer → current client
 	wg.Add(1)
@@ -216,44 +235,23 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 					)
 
 					// Write processed data (original or modified) to ring buffer
-					ring.Write(processedData)
+					_, _ = ring.Write(processedData)
 
-					// Send to current client if attached
-					clientMu.Lock()
-					if currentClient != nil {
-						msg := Msg{
-							Type: MsgOutput,
-							Data: EncodeData(processedData),
-						}
-						encoded, encErr := Encode(msg)
-						if encErr == nil {
-							_, _ = currentClient.Write(encoded)
-						}
-					}
-					clientMu.Unlock()
+					writeToCurrentClient(Msg{
+						Type: MsgOutput,
+						Data: EncodeData(processedData),
+					})
 				} else {
 					// No prompt detection - pass through
-					ring.Write(data)
+					_, _ = ring.Write(data)
 
-					// Send to current client if attached
-					clientMu.Lock()
-					if currentClient != nil {
-						msg := Msg{
-							Type: MsgOutput,
-							Data: EncodeData(data),
-						}
-						encoded, encErr := Encode(msg)
-						if encErr == nil {
-							_, _ = currentClient.Write(encoded)
-						}
-					}
-					clientMu.Unlock()
+					writeToCurrentClient(Msg{
+						Type: MsgOutput,
+						Data: EncodeData(data),
+					})
 				}
 			}
 			if err != nil {
-				if err != io.EOF {
-					// Log error but continue
-				}
 				return
 			}
 		}
@@ -276,22 +274,26 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 				exitCode = 1
 			}
 		}
+		if cfg.ExitCode != nil {
+			*cfg.ExitCode = exitCode
+		}
 
 		// Send exit message to current client, then close it so handleClient
 		// unblocks immediately rather than waiting for the cancel deadline.
 		clientMu.Lock()
-		if currentClient != nil {
+		c := currentClient
+		clientMu.Unlock()
+		if c != nil {
 			msg := Msg{
 				Type: MsgExit,
 				Code: &exitCode,
 			}
 			encoded, encErr := Encode(msg)
 			if encErr == nil {
-				_, _ = currentClient.Write(encoded)
+				_, _ = c.Write(encoded)
 			}
-			_ = currentClient.Close()
+			_ = c.Close()
 		}
-		clientMu.Unlock()
 
 		// Clear session process from manager
 		_ = cfg.Manager.ClearSessionProcess(cfg.WorkspaceID)
@@ -358,7 +360,7 @@ func RunDaemon(ctx context.Context, cfg DaemonConfig) error {
 	}
 
 	// Close listener to stop accept loop
-	listener.Close()
+	_ = listener.Close()
 
 	// Wait for main goroutines (PTY reader, agent waiter, accept loop),
 	// then for any in-flight client handlers.
@@ -379,19 +381,19 @@ func handleClient(
 	currentClient *net.Conn,
 	master *os.File,
 ) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Check if another client is already attached
 	clientMu.Lock()
 	if *currentClient != nil {
+		clientMu.Unlock()
 		// Reject concurrent attach
 		msg := Msg{
 			Type:    MsgError,
 			Message: "another client is already attached",
 		}
 		encoded, _ := Encode(msg)
-		conn.Write(encoded)
-		clientMu.Unlock()
+		_, _ = conn.Write(encoded)
 		return
 	}
 	*currentClient = conn
@@ -489,7 +491,7 @@ func processWithPromptDetection(
 	approvalWg *sync.WaitGroup,
 ) []byte {
 	// Buffer the incoming data
-	lineBuffer.Write(data)
+	_, _ = lineBuffer.Write(data)
 
 	// Check if we have complete lines (ending with newline)
 	bufferContent := lineBuffer.String()
@@ -503,7 +505,7 @@ func processWithPromptDetection(
 	// Keep the last incomplete line in buffer
 	lastLine := lines[len(lines)-1]
 	lineBuffer.Reset()
-	lineBuffer.WriteString(lastLine)
+	_, _ = lineBuffer.WriteString(lastLine)
 
 	// Process complete lines for prompt detection
 	for i := 0; i < len(lines)-1; i++ {
@@ -574,7 +576,7 @@ func handleApprovalRequest(
 
 func finishApprovalRequest(ctx context.Context, configDir string, req state.ApprovalRequest, master *os.File) {
 	timeout := time.Until(req.TimeoutAt)
-	response, timedOut := waitForApprovalResponse(ctx, configDir, req.WorkspaceID, timeout)
+	response, timedOut := waitForApprovalResponse(ctx, configDir, req.WorkspaceID, req.ID, timeout)
 
 	defer func() {
 		if err := state.CleanupApprovalState(configDir, req.WorkspaceID); err != nil {
@@ -612,7 +614,7 @@ func finishApprovalRequest(ctx context.Context, configDir string, req state.Appr
 // waitForApprovalResponse polls for an approval response with timeout.
 // Returns nil with timedOut=true on timeout and nil with timedOut=false on
 // context cancellation.
-func waitForApprovalResponse(ctx context.Context, configDir, workspaceID string, timeout time.Duration) (*state.ApprovalResponse, bool) {
+func waitForApprovalResponse(ctx context.Context, configDir, workspaceID, requestID string, timeout time.Duration) (*state.ApprovalResponse, bool) {
 	if timeout <= 0 {
 		return nil, true
 	}
@@ -629,7 +631,10 @@ func waitForApprovalResponse(ctx context.Context, configDir, workspaceID string,
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[daemon] error reading approval response: %v\n", err)
 		} else if response != nil {
-			return response, false
+			if response.RequestID == requestID {
+				return response, false
+			}
+			fmt.Fprintf(os.Stderr, "[daemon] ignoring approval response for request %s while waiting for %s\n", response.RequestID, requestID)
 		}
 
 		select {

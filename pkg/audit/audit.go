@@ -91,7 +91,7 @@ func LogTimeout(configDir, workspaceID, agent, command, requestID string, riskLe
 }
 
 // logEvent appends an event to the audit log under configDir.
-func logEvent(configDir string, event Event) error {
+func logEvent(configDir string, event Event) (retErr error) {
 	path, err := auditLogPath(configDir)
 	if err != nil {
 		return err
@@ -101,7 +101,15 @@ func logEvent(configDir string, event Event) error {
 	if err != nil {
 		return fmt.Errorf("open audit log: %w", err)
 	}
-	defer f.Close()
+	if err := os.Chmod(path, 0600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("chmod audit log: %w", err)
+	}
+	defer func() {
+		if cerr := f.Close(); retErr == nil && cerr != nil {
+			retErr = fmt.Errorf("close audit log: %w", cerr)
+		}
+	}()
 
 	data, err := json.Marshal(event)
 	if err != nil {

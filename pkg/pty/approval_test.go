@@ -14,6 +14,29 @@ import (
 	"github.com/adryanev/orkestra/pkg/state"
 )
 
+func cleanupApprovalStateForTest(t *testing.T, configDir, workspaceID string) {
+	t.Helper()
+	if err := state.CleanupApprovalState(configDir, workspaceID); err != nil {
+		t.Fatalf("CleanupApprovalState failed: %v", err)
+	}
+}
+
+func deferCleanupApprovalStateForTest(t *testing.T, configDir, workspaceID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := state.CleanupApprovalState(configDir, workspaceID); err != nil {
+			t.Errorf("cleanup approval state failed: %v", err)
+		}
+	})
+}
+
+func setReadDeadlineForTest(t *testing.T, f *os.File, deadline time.Time) {
+	t.Helper()
+	if err := f.SetReadDeadline(deadline); err != nil {
+		t.Fatalf("SetReadDeadline failed: %v", err)
+	}
+}
+
 func TestProcessWithPromptDetection(t *testing.T) {
 	configDir := t.TempDir()
 
@@ -26,7 +49,7 @@ func TestProcessWithPromptDetection(t *testing.T) {
 	}{
 		{
 			name:           "Claude bash command prompt",
-			input:          "Allow claude to execute this Bash command? git status\n",
+			input:          "Allow claude to execute this Bash command? git status [Y/n]\n",
 			expectDetected: true,
 			expectedAgent:  "claude",
 			expectedCmd:    "git status",
@@ -45,7 +68,7 @@ func TestProcessWithPromptDetection(t *testing.T) {
 		},
 		{
 			name:           "Incomplete prompt line",
-			input:          "Allow claude to execute this Bash command? ls -la",
+			input:          "Allow claude to execute this Bash command? ls -la [Y/n]",
 			expectDetected: true,
 			expectedAgent:  "claude",
 			expectedCmd:    "ls -la",
@@ -55,8 +78,8 @@ func TestProcessWithPromptDetection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			workspaceID := "test-workspace"
-			_ = state.CleanupApprovalState(configDir, workspaceID)
-			defer state.CleanupApprovalState(configDir, workspaceID)
+			cleanupApprovalStateForTest(t, configDir, workspaceID)
+			deferCleanupApprovalStateForTest(t, configDir, workspaceID)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -68,8 +91,8 @@ func TestProcessWithPromptDetection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create pipe: %v", err)
 			}
-			defer r.Close()
-			defer w.Close()
+			defer func() { _ = r.Close() }()
+			defer func() { _ = w.Close() }()
 
 			start := time.Now()
 			result := processWithPromptDetection(
@@ -126,11 +149,11 @@ func TestHandleApprovalRequest_AutoReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create pipe: %v", err)
 	}
-	defer r.Close()
-	defer w.Close()
+	defer func() { _ = r.Close() }()
+	defer func() { _ = w.Close() }()
 
-	_ = state.CleanupApprovalState(configDir, workspaceID)
-	defer state.CleanupApprovalState(configDir, workspaceID)
+	cleanupApprovalStateForTest(t, configDir, workspaceID)
+	deferCleanupApprovalStateForTest(t, configDir, workspaceID)
 
 	var approvalWg sync.WaitGroup
 	done := make(chan struct{})
@@ -146,7 +169,7 @@ func TestHandleApprovalRequest_AutoReject(t *testing.T) {
 	}
 
 	buf := make([]byte, 2)
-	r.SetReadDeadline(time.Now().Add(timeout + 500*time.Millisecond))
+	setReadDeadlineForTest(t, r, time.Now().Add(timeout+500*time.Millisecond))
 	n, err := r.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read injected response: %v", err)
@@ -169,11 +192,11 @@ func TestHandleApprovalRequest_Approve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create pipe: %v", err)
 	}
-	defer r.Close()
-	defer w.Close()
+	defer func() { _ = r.Close() }()
+	defer func() { _ = w.Close() }()
 
-	_ = state.CleanupApprovalState(configDir, workspaceID)
-	defer state.CleanupApprovalState(configDir, workspaceID)
+	cleanupApprovalStateForTest(t, configDir, workspaceID)
+	deferCleanupApprovalStateForTest(t, configDir, workspaceID)
 
 	var approvalWg sync.WaitGroup
 	handleApprovalRequest(context.Background(), workspaceID, agent, command, configDir, timeout, w, &approvalWg)
@@ -197,7 +220,7 @@ func TestHandleApprovalRequest_Approve(t *testing.T) {
 	}
 
 	buf := make([]byte, 2)
-	r.SetReadDeadline(time.Now().Add(2 * time.Second))
+	setReadDeadlineForTest(t, r, time.Now().Add(2*time.Second))
 	n, err := r.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read injected response: %v", err)
@@ -220,11 +243,11 @@ func TestHandleApprovalRequest_Reject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create pipe: %v", err)
 	}
-	defer r.Close()
-	defer w.Close()
+	defer func() { _ = r.Close() }()
+	defer func() { _ = w.Close() }()
 
-	_ = state.CleanupApprovalState(configDir, workspaceID)
-	defer state.CleanupApprovalState(configDir, workspaceID)
+	cleanupApprovalStateForTest(t, configDir, workspaceID)
+	deferCleanupApprovalStateForTest(t, configDir, workspaceID)
 
 	var approvalWg sync.WaitGroup
 	handleApprovalRequest(context.Background(), workspaceID, agent, command, configDir, timeout, w, &approvalWg)
@@ -251,7 +274,7 @@ func TestHandleApprovalRequest_Reject(t *testing.T) {
 	}
 
 	buf := make([]byte, 2)
-	r.SetReadDeadline(time.Now().Add(2 * time.Second))
+	setReadDeadlineForTest(t, r, time.Now().Add(2*time.Second))
 	n, err := r.Read(buf)
 	if err != nil {
 		t.Fatalf("failed to read injected response: %v", err)
@@ -286,13 +309,13 @@ func TestInjectResponse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create pipe: %v", err)
 			}
-			defer r.Close()
-			defer w.Close()
+			defer func() { _ = r.Close() }()
+			defer func() { _ = w.Close() }()
 
 			injectResponse(w, tt.approved)
 
 			buf := make([]byte, 2)
-			r.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			setReadDeadlineForTest(t, r, time.Now().Add(100*time.Millisecond))
 			n, err := r.Read(buf)
 			if err != nil {
 				t.Fatalf("failed to read: %v", err)

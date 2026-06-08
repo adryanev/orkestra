@@ -25,7 +25,7 @@ Extended `pkg/pty/daemon.go` to intercept permission prompts by enhancing the PT
 
 ### Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
 │ PTY Reader Goroutine (daemon.go)                │
 │                                                  │
@@ -34,7 +34,7 @@ Extended `pkg/pty/daemon.go` to intercept permission prompts by enhancing the PT
 │                          Risk Classification    │
 │                                   ↓              │
 │                     Write Approval Request       │
-│                     (~/.orkestra/approvals/)     │
+│                  (<configDir>/approvals/)        │
 │                                   ↓              │
 │                        Poll for Response         │
 │                        (timeout: 5min)           │
@@ -42,7 +42,7 @@ Extended `pkg/pty/daemon.go` to intercept permission prompts by enhancing the PT
 │                   Inject "y" or "n" to PTY      │
 │                                   ↓              │
 │                          Audit Log               │
-│                  (~/.orkestra/audit/)            │
+│                   (<configDir>/audit/)           │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -87,8 +87,8 @@ func handleApprovalRequest(
 Orchestrates the complete approval workflow:
 1. Classifies risk via `ClassifyRisk()`
 2. Creates `ApprovalRequest` with UUID
-3. Writes to `~/.orkestra/approvals/{workspace}_pending.json`
-4. Polls for response file `~/.orkestra/approvals/{workspace}_response.json`
+3. Writes to `<configDir>/approvals/{workspace}_pending.json`
+4. Polls for response file `<configDir>/approvals/{workspace}_response.json`
 5. On response or timeout: injects "y" or "n"
 6. Logs to audit trail
 7. Cleans up state files
@@ -117,7 +117,7 @@ Writes "y\n" (approve) or "n\n" (reject) to PTY master stdin.
 
 ### Audit Logging
 
-All approval events are logged to `~/.orkestra/audit/approvals.jsonl` as newline-delimited JSON:
+All approval events are logged to `<configDir>/audit/approvals.jsonl` as newline-delimited JSON:
 
 ```json
 {"timestamp":"2026-06-08T10:30:00Z","workspace_id":"ws-123","agent":"claude","command":"git push","risk_level":1,"event_type":"request","request_id":"uuid-123"}
@@ -193,18 +193,18 @@ go test ./pkg/pty -run TestApproval
 
 ### Example Flow
 
-```
+```text
 1. Agent: "Allow claude to execute this Bash command? rm -rf /"
    ↓
 2. Daemon detects prompt → classifies as Dangerous
    ↓
-3. Writes to ~/.orkestra/approvals/ws-123_pending.json
+3. Writes to <configDir>/approvals/ws-123_pending.json
    ↓
 4. External UI reads pending request
    ↓
 5. User rejects via UI
    ↓
-6. UI writes to ~/.orkestra/approvals/ws-123_response.json
+6. UI writes to <configDir>/approvals/ws-123_response.json
    ↓
 7. Daemon reads response → injects "n\n"
    ↓

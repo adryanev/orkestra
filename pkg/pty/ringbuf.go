@@ -113,11 +113,3 @@ func (rb *RingBuffer) Reset() {
 	rb.start = 0
 	rb.size = 0
 }
-
-// min returns the minimum of two integers.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

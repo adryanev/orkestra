@@ -87,9 +87,12 @@ var workspaceRemoveCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to remove workspace %s and its worktree? [y/N] ", workspaceRemoveID)
 			scanner := bufio.NewScanner(cmd.InOrStdin())
 			scanner.Scan()
+			if err := scanner.Err(); err != nil {
+				emitError(fmt.Errorf("read confirmation: %w", err))
+			}
 			if answer := strings.TrimSpace(scanner.Text()); answer != "y" && answer != "Y" {
 				fmt.Fprintln(cmd.OutOrStdout(), "Cancelled")
-				return
+				emitError(fmt.Errorf("workspace removal cancelled"))
 			}
 		}
 

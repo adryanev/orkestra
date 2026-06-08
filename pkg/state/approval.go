@@ -16,13 +16,13 @@ import (
 
 // ApprovalRequest represents a pending command approval request from an agent.
 type ApprovalRequest struct {
-	ID          string      `json:"id"`
-	WorkspaceID string      `json:"workspace_id"`
-	Agent       string      `json:"agent"` // claude or codex
-	Command     string      `json:"command"`
-	RiskLevel   risk.Level  `json:"risk_level"`
-	RequestedAt time.Time   `json:"requested_at"`
-	TimeoutAt   time.Time   `json:"timeout_at"`
+	ID          string     `json:"id"`
+	WorkspaceID string     `json:"workspace_id"`
+	Agent       string     `json:"agent"` // claude or codex
+	Command     string     `json:"command"`
+	RiskLevel   risk.Level `json:"risk_level"`
+	RequestedAt time.Time  `json:"requested_at"`
+	TimeoutAt   time.Time  `json:"timeout_at"`
 }
 
 // ApprovalResponse represents the user's response to an approval request.
@@ -75,7 +75,7 @@ func WritePendingApproval(configDir, workspaceID string, req ApprovalRequest) er
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	data, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
@@ -97,7 +97,7 @@ func ReadPendingApproval(configDir, workspaceID string) (*ApprovalRequest, error
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	data, err := ReadFile(pendingPath(configDir, workspaceID))
 	if err != nil {
@@ -123,7 +123,7 @@ func WriteApprovalResponse(configDir, workspaceID string, resp ApprovalResponse)
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
@@ -145,7 +145,7 @@ func ReadApprovalResponse(configDir, workspaceID string) (*ApprovalResponse, err
 	if err != nil {
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	data, err := ReadFile(responsePath(configDir, workspaceID))
 	if err != nil {
@@ -172,7 +172,7 @@ func CleanupApprovalState(configDir, workspaceID string) error {
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 
 	// Remove pending file (ignore not-exist errors)
 	if err := os.Remove(pendingPath(configDir, workspaceID)); err != nil && !os.IsNotExist(err) {

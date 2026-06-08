@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/adryanev/orkestra/pkg/process"
 	"github.com/adryanev/orkestra/pkg/pty"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,9 @@ reattach later to resume interaction.`,
 		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
 			emitError(fmt.Errorf("PTY socket does not exist: %s (daemon may have exited)", socketPath))
 		}
+		if !process.IdentityMatches(session.PTY.DaemonPID, session.PTY.DaemonPGID, session.PTY.DaemonStart) {
+			emitError(fmt.Errorf("workspace %s PTY daemon identity no longer matches recorded state", attachWorkspace))
+		}
 
 		// Attach to the PTY session
 		ctx := context.Background()
@@ -63,5 +67,5 @@ reattach later to resume interaction.`,
 
 func init() {
 	attachCmd.Flags().StringVar(&attachWorkspace, "workspace", "", "Workspace ID to attach to")
-	attachCmd.MarkFlagRequired("workspace")
+	_ = attachCmd.MarkFlagRequired("workspace")
 }

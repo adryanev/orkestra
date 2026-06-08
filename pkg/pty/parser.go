@@ -15,25 +15,25 @@ import (
 	"strings"
 )
 
+const approvalTokenPattern = `\[[Yy]/[Nn]\]`
+
 // PromptPattern defines a pattern for detecting permission prompts from an agent.
 type PromptPattern struct {
-	Agent            string                           // Agent identifier (e.g., "claude", "codex")
-	Pattern          *regexp.Regexp                   // Compiled regex pattern to match prompt text
-	CommandExtractor func(match []string) string      // Function to extract command from regex capture groups
+	Agent            string                      // Agent identifier (e.g., "claude", "codex")
+	Pattern          *regexp.Regexp              // Compiled regex pattern to match prompt text
+	CommandExtractor func(match []string) string // Function to extract command from regex capture groups
 }
 
 // Predefined patterns for known agents.
 var patterns = []PromptPattern{
-	// Claude Code permission prompt pattern (multiline support with [\s\S] to match newlines)
-	// Example: "Allow claude to execute this Bash command?\n  git status"
-	// Also handles multiline commands with backslash continuation
-	// Stops when it encounters:
-	//   - \n\s*\[ (newline then bracket - for [Y/n] on separate line)
-	//   - \s+\[[YyNn/] (space then bracket starting [Y/n] - inline prompt)
-	//   - $ (end of string)
+	// Claude Code permission prompt pattern. Anchored to a prompt line and
+	// requiring an explicit [Y/n] gate to avoid matching ordinary output.
+	// Example: "Allow claude to execute this Bash command?\n  git status\n[Y/n]"
+	// Also handles multiline commands with backslash continuation and inline
+	// or separate-line approval tokens.
 	{
 		Agent:   "claude",
-		Pattern: regexp.MustCompile(`(?i)Allow\s+claude\s+to\s+execute\s+this\s+Bash\s+command\?\s*\n?\s*([\s\S]+?)(?:\n\s*\[|\s+\[[YyNn/]|$)`),
+		Pattern: regexp.MustCompile(`(?im)^Allow\s+claude\s+to\s+execute\s+this\s+Bash\s+command\?\s*\n?\s*([\s\S]+?)\s*(?:\n\s*)?` + approvalTokenPattern),
 		CommandExtractor: func(match []string) string {
 			if len(match) > 1 {
 				return strings.TrimSpace(match[1])
@@ -59,7 +59,7 @@ var patterns = []PromptPattern{
 	// Example: "Run command: git status [Y/n]"
 	{
 		Agent:   "codex",
-		Pattern: regexp.MustCompile(`(?im)^Run\s+command:\s*([^\n\[│╰╭─╮╯]+)\s*\[Y/n\]`),
+		Pattern: regexp.MustCompile(`(?im)^Run\s+command:\s*([^\n\[│╰╭─╮╯]+)\s*` + approvalTokenPattern),
 		CommandExtractor: func(match []string) string {
 			if len(match) > 1 {
 				return strings.TrimSpace(match[1])
@@ -72,7 +72,7 @@ var patterns = []PromptPattern{
 	// Example: "Execute: npm install [Y/n]"
 	{
 		Agent:   "codex",
-		Pattern: regexp.MustCompile(`(?im)^Execute:\s*([^\n\[│╰╭─╮╯]+)\s*\[Y/n\]`),
+		Pattern: regexp.MustCompile(`(?im)^Execute:\s*([^\n\[│╰╭─╮╯]+)\s*` + approvalTokenPattern),
 		CommandExtractor: func(match []string) string {
 			if len(match) > 1 {
 				return strings.TrimSpace(match[1])
@@ -98,4 +98,3 @@ func DetectPrompt(line string) (detected bool, agent, command string) {
 	}
 	return false, "", ""
 }
-

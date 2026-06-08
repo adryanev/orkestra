@@ -148,7 +148,7 @@ func (fd *fakeDaemon) acceptLoop() {
 
 func (fd *fakeDaemon) handleClient(conn net.Conn) {
 	defer close(fd.done)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	scanner := bufio.NewScanner(conn)
 
@@ -173,7 +173,7 @@ func (fd *fakeDaemon) handleClient(conn net.Conn) {
 	if fd.errorOnAttach != "" {
 		errMsg := Msg{Type: MsgError, Message: fd.errorOnAttach}
 		encoded, _ := Encode(errMsg)
-		conn.Write(encoded)
+		_, _ = conn.Write(encoded)
 		return
 	}
 
@@ -188,14 +188,14 @@ func (fd *fakeDaemon) handleClient(conn net.Conn) {
 	if len(fd.sendBuffer) > 0 {
 		bufMsg := Msg{Type: MsgBuffer, Data: EncodeData(fd.sendBuffer)}
 		encoded, _ := Encode(bufMsg)
-		conn.Write(encoded)
+		_, _ = conn.Write(encoded)
 	}
 
 	// Send output messages
 	for _, data := range fd.sendOutput {
 		outMsg := Msg{Type: MsgOutput, Data: EncodeData(data)}
 		encoded, _ := Encode(outMsg)
-		conn.Write(encoded)
+		_, _ = conn.Write(encoded)
 		time.Sleep(10 * time.Millisecond) // Small delay to ensure proper ordering
 	}
 
@@ -246,7 +246,7 @@ func (fd *fakeDaemon) handleClient(conn net.Conn) {
 	if fd.sendExit {
 		exitMsg := Msg{Type: MsgExit, Code: &fd.sendExitCode}
 		encoded, _ := Encode(exitMsg)
-		conn.Write(encoded)
+		_, _ = conn.Write(encoded)
 	}
 }
 
@@ -260,9 +260,9 @@ func (fd *fakeDaemon) waitReady(timeout time.Duration) bool {
 }
 
 func (fd *fakeDaemon) close() {
-	fd.listener.Close()
+	_ = fd.listener.Close()
 	if fd.clientConn != nil {
-		fd.clientConn.Close()
+		_ = fd.clientConn.Close()
 	}
 	<-fd.done
 }
@@ -276,7 +276,7 @@ func TestRunAttach_Success(t *testing.T) {
 	}
 
 	socketPath := "/tmp/test-pty-attach-success.sock"
-	defer os.Remove(socketPath)
+	defer func() { _ = os.Remove(socketPath) }()
 
 	daemon := newFakeDaemon(t, socketPath)
 	daemon.sendBuffer = []byte("buffer content\n")
@@ -292,7 +292,7 @@ func TestRunAttach_Success(t *testing.T) {
 	}
 
 	_, stdinWriter := io.Pipe()
-	defer stdinWriter.Close()
+	defer func() { _ = stdinWriter.Close() }()
 
 	var outputBuf strings.Builder
 
@@ -318,7 +318,7 @@ func TestRunAttach_Success(t *testing.T) {
 
 func TestRunAttach_DaemonError(t *testing.T) {
 	socketPath := "/tmp/test-pty-attach-error.sock"
-	defer os.Remove(socketPath)
+	defer func() { _ = os.Remove(socketPath) }()
 
 	daemon := newFakeDaemon(t, socketPath)
 	daemon.errorOnAttach = "test error message"
@@ -381,7 +381,7 @@ func TestRunAttach_EmptySocketPath(t *testing.T) {
 
 func TestConnectWithRetry(t *testing.T) {
 	socketPath := "/tmp/test-pty-connect-retry.sock"
-	defer os.Remove(socketPath)
+	defer func() { _ = os.Remove(socketPath) }()
 
 	ctx := context.Background()
 
@@ -392,10 +392,10 @@ func TestConnectWithRetry(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer listener.Close()
+		defer func() { _ = listener.Close() }()
 		conn, _ := listener.Accept()
 		if conn != nil {
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 
@@ -404,7 +404,7 @@ func TestConnectWithRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectWithRetry failed: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 }
 
 func TestConnectWithRetry_Timeout(t *testing.T) {

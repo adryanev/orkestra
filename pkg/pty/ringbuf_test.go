@@ -6,6 +6,13 @@ import (
 	"testing"
 )
 
+func mustWriteRing(t *testing.T, rb *RingBuffer, data []byte) {
+	t.Helper()
+	if _, err := rb.Write(data); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+}
+
 func TestRingBuffer_HappyPath(t *testing.T) {
 	rb := NewRingBuffer(10)
 
@@ -27,7 +34,7 @@ func TestRingBuffer_HappyPath(t *testing.T) {
 	}
 
 	// Write more data
-	rb.Write([]byte("world"))
+	mustWriteRing(t, rb, []byte("world"))
 	result = rb.Bytes()
 	if !bytes.Equal(result, []byte("helloworld")) {
 		t.Errorf("expected 'helloworld', got %q", result)
@@ -38,21 +45,21 @@ func TestRingBuffer_Wraparound(t *testing.T) {
 	rb := NewRingBuffer(10)
 
 	// Fill the buffer
-	rb.Write([]byte("0123456789"))
+	mustWriteRing(t, rb, []byte("0123456789"))
 	result := rb.Bytes()
 	if !bytes.Equal(result, []byte("0123456789")) {
 		t.Errorf("expected '0123456789', got %q", result)
 	}
 
 	// Write more, causing wraparound
-	rb.Write([]byte("abc"))
+	mustWriteRing(t, rb, []byte("abc"))
 	result = rb.Bytes()
 	if !bytes.Equal(result, []byte("3456789abc")) {
 		t.Errorf("expected '3456789abc', got %q", result)
 	}
 
 	// Write more to test multiple wraparounds
-	rb.Write([]byte("XYZ"))
+	mustWriteRing(t, rb, []byte("XYZ"))
 	result = rb.Bytes()
 	if !bytes.Equal(result, []byte("6789abcXYZ")) {
 		t.Errorf("expected '6789abcXYZ', got %q", result)
@@ -63,7 +70,7 @@ func TestRingBuffer_LargerThanCapacity(t *testing.T) {
 	rb := NewRingBuffer(5)
 
 	// Write data larger than capacity
-	rb.Write([]byte("0123456789"))
+	mustWriteRing(t, rb, []byte("0123456789"))
 	result := rb.Bytes()
 	// Should only keep the last 5 bytes
 	if !bytes.Equal(result, []byte("56789")) {
@@ -87,7 +94,7 @@ func TestRingBuffer_Empty(t *testing.T) {
 func TestRingBuffer_Reset(t *testing.T) {
 	rb := NewRingBuffer(10)
 
-	rb.Write([]byte("hello"))
+	mustWriteRing(t, rb, []byte("hello"))
 	rb.Reset()
 
 	if rb.Len() != 0 {
@@ -138,7 +145,7 @@ func TestRingBuffer_Concurrency(t *testing.T) {
 			defer wg.Done()
 			data := []byte{byte(id)}
 			for j := 0; j < writesPerWriter; j++ {
-				rb.Write(data)
+				_, _ = rb.Write(data)
 			}
 		}(i)
 	}
@@ -172,11 +179,11 @@ func TestRingBuffer_MultipleWraparounds(t *testing.T) {
 	rb := NewRingBuffer(8)
 
 	// Write in chunks that will cause multiple wraparounds
-	rb.Write([]byte("abc"))   // "abc_____" (3 bytes)
-	rb.Write([]byte("def"))   // "abcdef__" (6 bytes)
-	rb.Write([]byte("ghi"))   // "bcdefghi" (8 bytes, discarded 'a')
-	rb.Write([]byte("jkl"))   // "efghijkl" (8 bytes, discarded 'bcd')
-	rb.Write([]byte("mnop"))  // "ijklmnop" (8 bytes, discarded 'efgh')
+	mustWriteRing(t, rb, []byte("abc"))  // "abc_____" (3 bytes)
+	mustWriteRing(t, rb, []byte("def"))  // "abcdef__" (6 bytes)
+	mustWriteRing(t, rb, []byte("ghi"))  // "bcdefghi" (8 bytes, discarded 'a')
+	mustWriteRing(t, rb, []byte("jkl"))  // "efghijkl" (8 bytes, discarded 'bcd')
+	mustWriteRing(t, rb, []byte("mnop")) // "ijklmnop" (8 bytes, discarded 'efgh')
 
 	result := rb.Bytes()
 	expected := []byte("ijklmnop")
@@ -190,7 +197,7 @@ func TestRingBuffer_SingleByteWrites(t *testing.T) {
 
 	// Write one byte at a time
 	for _, b := range []byte("0123456789") {
-		rb.Write([]byte{b})
+		mustWriteRing(t, rb, []byte{b})
 	}
 
 	result := rb.Bytes()

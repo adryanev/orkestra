@@ -46,7 +46,7 @@ func TestComposeEnvOverlaysAndDedups(t *testing.T) {
 		"PATH":       "/shell/bin",
 		"SHELL_ONLY": "yes",
 	}}
-	vars := composeEnv(shell, "tok-9")
+	vars := ComposeEnv(shell, "tok-9")
 
 	// Token injected.
 	if v, ok := envValue(vars, "GH_TOKEN"); !ok || v != "tok-9" {
@@ -72,7 +72,7 @@ func TestComposeEnvOverlaysAndDedups(t *testing.T) {
 }
 
 func TestComposeEnvNoToken(t *testing.T) {
-	vars := composeEnv(&env.ShellEnv{AllVars: map[string]string{}}, "")
+	vars := ComposeEnv(&env.ShellEnv{AllVars: map[string]string{}}, "")
 	if _, ok := envValue(vars, "GH_TOKEN"); ok {
 		t.Error("GH_TOKEN should be absent when no token provided")
 	}
@@ -80,14 +80,14 @@ func TestComposeEnvNoToken(t *testing.T) {
 
 func TestResolveBinary(t *testing.T) {
 	shell := &env.ShellEnv{ClaudePath: "/abs/claude", CodexPath: "/abs/codex"}
-	if got := resolveBinary(Claude, shell); got != "/abs/claude" {
+	if got := ResolveBinary(Claude, shell); got != "/abs/claude" {
 		t.Errorf("claude = %q, want /abs/claude", got)
 	}
-	if got := resolveBinary(Codex, shell); got != "/abs/codex" {
+	if got := ResolveBinary(Codex, shell); got != "/abs/codex" {
 		t.Errorf("codex = %q, want /abs/codex", got)
 	}
 	// Fallback to bare name when not resolved.
-	if got := resolveBinary(Claude, &env.ShellEnv{}); got != "claude" {
+	if got := ResolveBinary(Claude, &env.ShellEnv{}); got != "claude" {
 		t.Errorf("fallback = %q, want claude", got)
 	}
 }

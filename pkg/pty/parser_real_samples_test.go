@@ -8,12 +8,12 @@ import (
 // captured from real sessions to ensure robust detection in production scenarios.
 func TestDetectPrompt_RealClaudeCodeSamples(t *testing.T) {
 	tests := []struct {
-		name            string
-		sample          string
-		wantDetected    bool
-		wantAgent       string
-		wantCommand     string
-		description     string
+		name         string
+		sample       string
+		wantDetected bool
+		wantAgent    string
+		wantCommand  string
+		description  string
 	}{
 		{
 			name: "Claude Code bash permission - typical format",
@@ -114,8 +114,8 @@ Allow claude to call Read?
 			description:  "Git commit with quoted message",
 		},
 		{
-			name:   "Claude Code multiline command with continuation",
-			sample: "Allow claude to execute this Bash command?\n  curl -X POST https://api.example.com/endpoint \\\n    -H \"Content-Type: application/json\" \\\n    -d '{\"key\": \"value\"}'\n[Y/n]",
+			name:         "Claude Code multiline command with continuation",
+			sample:       "Allow claude to execute this Bash command?\n  curl -X POST https://api.example.com/endpoint \\\n    -H \"Content-Type: application/json\" \\\n    -d '{\"key\": \"value\"}'\n[Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "curl -X POST https://api.example.com/endpoint \\\n    -H \"Content-Type: application/json\" \\\n    -d '{\"key\": \"value\"}'",
@@ -170,12 +170,12 @@ Allow claude to call Read?
 // TestDetectPrompt_RealCodexSamples tests with actual Codex output patterns
 func TestDetectPrompt_RealCodexSamples(t *testing.T) {
 	tests := []struct {
-		name            string
-		sample          string
-		wantDetected    bool
-		wantAgent       string
-		wantCommand     string
-		description     string
+		name         string
+		sample       string
+		wantDetected bool
+		wantAgent    string
+		wantCommand  string
+		description  string
 	}{
 		{
 			// Codex canonical single-line format: command and [Y/n] on the same line.
@@ -248,12 +248,12 @@ func TestDetectPrompt_RealCodexSamples(t *testing.T) {
 // TestDetectPrompt_EdgeCasesAndNoise tests with noisy output, ANSI codes, and edge cases
 func TestDetectPrompt_EdgeCasesAndNoise(t *testing.T) {
 	tests := []struct {
-		name            string
-		sample          string
-		wantDetected    bool
-		wantAgent       string
-		wantCommand     string
-		description     string
+		name         string
+		sample       string
+		wantDetected bool
+		wantAgent    string
+		wantCommand  string
+		description  string
 	}{
 		{
 			name: "Mixed output with prompt embedded",
@@ -328,11 +328,11 @@ EOF
 [Y/n]`,
 			wantDetected: true,
 			wantAgent:    "claude",
-			wantCommand:  `cat <<EOF > config.yml
+			wantCommand: `cat <<EOF > config.yml
 server:
   port: 8080
 EOF`,
-			description:  "Command with heredoc (multiline literal)",
+			description: "Command with heredoc (multiline literal)",
 		},
 		{
 			name:         "Empty or whitespace only",
@@ -379,7 +379,7 @@ func TestDetectPrompt_StreamingScenarios(t *testing.T) {
 				"t", "h", "i", "s", " ", "B", "a", "s", "h", " ", "c", "o",
 				"m", "m", "a", "n", "d", "?", "\n", " ", " ", "d", "o", "c",
 				"k", "e", "r", "-", "c", "o", "m", "p", "o", "s", "e", " ",
-				"u", "p", " ", "-", "d", "\n",
+				"u", "p", " ", "-", "d", "\n", "[Y/n]",
 			},
 			description: "Simulates character-by-character streaming",
 		},
@@ -387,7 +387,7 @@ func TestDetectPrompt_StreamingScenarios(t *testing.T) {
 			name: "Word by word",
 			chunks: []string{
 				"Allow ", "claude ", "to ", "execute ", "this ", "Bash ",
-				"command?\n", "  docker-compose ", "up ", "-d\n",
+				"command?\n", "  docker-compose ", "up ", "-d\n", "[Y/n]",
 			},
 			description: "Simulates word-by-word chunks",
 		},
@@ -396,6 +396,7 @@ func TestDetectPrompt_StreamingScenarios(t *testing.T) {
 			chunks: []string{
 				"Allow claude to execute this Bash command?\n",
 				"  docker-compose up -d\n",
+				"[Y/n]",
 			},
 			description: "Simulates line-by-line streaming",
 		},
@@ -405,7 +406,7 @@ func TestDetectPrompt_StreamingScenarios(t *testing.T) {
 				"Allow claude to ex",
 				"ecute this Bash command",
 				"?\n  docker-co",
-				"mpose up -d\n",
+				"mpose up -d\n[Y/n]",
 			},
 			description: "Simulates irregular network packet boundaries",
 		},
@@ -452,7 +453,7 @@ func TestDetectPrompt_StreamingScenarios(t *testing.T) {
 func TestDetectPrompt_ConcurrentSessions(t *testing.T) {
 	// In reality, orkestra spawns agents in separate PTYs, but this tests
 	// that patterns don't cross-contaminate if output were mixed
-	claudePrompt := "Allow claude to execute this Bash command? git push"
+	claudePrompt := "Allow claude to execute this Bash command? git push [Y/n]"
 	codexPrompt := "Run command: npm test [Y/n]"
 	regularOutput := "Analyzing codebase... 50% complete"
 
@@ -476,27 +477,10 @@ func TestDetectPrompt_ConcurrentSessions(t *testing.T) {
 	}
 }
 
-// Helper function to split text into lines for line-by-line testing
-func splitLines(text string) []string {
-	var lines []string
-	current := ""
-	for _, ch := range text {
-		current += string(ch)
-		if ch == '\n' {
-			lines = append(lines, current)
-			current = ""
-		}
-	}
-	if current != "" {
-		lines = append(lines, current)
-	}
-	return lines
-}
-
 // TestIsPermissionPrompt_QuickCheck validates the convenience function
 func TestIsPermissionPrompt_QuickCheck(t *testing.T) {
 	prompts := []string{
-		"Allow claude to execute this Bash command? git status",
+		"Allow claude to execute this Bash command? git status [Y/n]",
 		"Run command: npm test [Y/n]",
 		"Allow claude to call mcp__orkestra__notify?",
 	}
@@ -528,7 +512,7 @@ func TestExtractCommand_QuickCheck(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"Allow claude to execute this Bash command? git status", "git status"},
+		{"Allow claude to execute this Bash command? git status [Y/n]", "git status"},
 		{"Run command: npm install [Y/n]", "npm install"},
 		{"Allow claude to call WebSearch?", "WebSearch"},
 		{"Regular output", ""},

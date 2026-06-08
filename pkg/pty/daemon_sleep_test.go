@@ -25,7 +25,9 @@ func TestDaemon_WithSleep(t *testing.T) {
 
 	// Create minimal git repo
 	repoPath := filepath.Join(tmpDir, "repo")
-	os.MkdirAll(repoPath, 0755)
+	if err := os.MkdirAll(repoPath, 0755); err != nil {
+		t.Fatalf("failed to create repo dir: %v", err)
+	}
 
 	cmds := [][]string{
 		{"git", "init"},
@@ -40,7 +42,9 @@ func TestDaemon_WithSleep(t *testing.T) {
 	for _, args := range cmds {
 		cmd := exec.Command(args[0], args[1:]...)
 		cmd.Dir = repoPath
-		cmd.Run()
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git command failed %v: %v", args, err)
+		}
 	}
 
 	ws, err := mgr.CreateWorkspace("test", repoPath, "", "", "main")
@@ -48,8 +52,8 @@ func TestDaemon_WithSleep(t *testing.T) {
 		t.Fatalf("failed to create workspace: %v", err)
 	}
 
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	socketPath := testSocketPath(t, "daemon.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Use sleep to keep process alive
@@ -66,7 +70,9 @@ func TestDaemon_WithSleep(t *testing.T) {
 	// Run daemon
 	daemonDone := make(chan struct{})
 	go func() {
-		RunDaemon(ctx, cfg)
+		if err := RunDaemon(ctx, cfg); err != nil {
+			t.Logf("daemon error: %v", err)
+		}
 		close(daemonDone)
 	}()
 	defer func() {
@@ -90,12 +96,16 @@ func TestDaemon_WithSleep(t *testing.T) {
 	if conn == nil {
 		t.Fatal("failed to connect to daemon")
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	// Send MsgAttach before expecting MsgReady
 	attachMsg := Msg{Type: MsgAttach, Rows: 24, Cols: 80}
-	if encoded, err := Encode(attachMsg); err == nil {
-		conn.Write(encoded)
+	encoded, err := Encode(attachMsg)
+	if err != nil {
+		t.Fatalf("encode attach: %v", err)
+	}
+	if _, err := conn.Write(encoded); err != nil {
+		t.Fatalf("write attach: %v", err)
 	}
 
 	scanner := bufio.NewScanner(conn)

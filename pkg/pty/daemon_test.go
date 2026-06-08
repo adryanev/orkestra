@@ -5,6 +5,7 @@ package pty
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -28,6 +29,20 @@ func setupTestManager(t *testing.T) (*workspace.Manager, string) {
 		t.Fatalf("failed to create test manager: %v", err)
 	}
 	return mgr, tmpDir
+}
+
+func testSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	socketDir, err := os.MkdirTemp("/tmp", "orkestra-pty-test-")
+	if err != nil {
+		t.Fatalf("failed to create short socket dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(socketDir); err != nil {
+			t.Errorf("failed to remove short socket dir: %v", err)
+		}
+	})
+	return filepath.Join(socketDir, name)
 }
 
 // Helper to create a test workspace
@@ -95,6 +110,27 @@ func sendAttach(t *testing.T, conn net.Conn) {
 	}
 }
 
+func writeTestConn(t *testing.T, conn net.Conn, data []byte) {
+	t.Helper()
+	if _, err := conn.Write(data); err != nil {
+		t.Fatalf("write conn: %v", err)
+	}
+}
+
+func closeTestConn(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "use of closed network connection") {
+		t.Errorf("close conn: %v", err)
+	}
+}
+
+func setReadDeadlineForConnTest(t *testing.T, conn net.Conn, deadline time.Time) {
+	t.Helper()
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+}
+
 func TestEnsureSocketDirRestrictsPermissions(t *testing.T) {
 	parent := t.TempDir()
 	socketDir := filepath.Join(parent, "pty")
@@ -120,7 +156,7 @@ func TestDaemon_HappyPath(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -162,7 +198,7 @@ func TestDaemon_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect to daemon: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
@@ -226,8 +262,8 @@ func TestDaemon_HappyPath(t *testing.T) {
 	// Detach
 	detachMsg := Msg{Type: MsgDetach}
 	encoded, _ = Encode(detachMsg)
-	conn.Write(encoded)
-	conn.Close()
+	writeTestConn(t, conn, encoded)
+	closeTestConn(t, conn)
 
 	// Stop daemon
 	cancel()
@@ -249,7 +285,7 @@ func TestDaemon_RingBufferReplay(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -266,7 +302,9 @@ func TestDaemon_RingBufferReplay(t *testing.T) {
 	// Run daemon in background
 	daemonDone := make(chan struct{})
 	go func() {
-		RunDaemon(ctx, cfg)
+		if err := RunDaemon(ctx, cfg); err != nil {
+			t.Logf("daemon error: %v", err)
+		}
 		close(daemonDone)
 	}()
 
@@ -290,7 +328,7 @@ func TestDaemon_RingBufferReplay(t *testing.T) {
 		Data: EncodeData([]byte("buffered data\n")),
 	}
 	encoded, _ := Encode(inputMsg)
-	conn1.Write(encoded)
+	writeTestConn(t, conn1, encoded)
 
 	// Wait for output
 	scanner.Scan()
@@ -298,8 +336,8 @@ func TestDaemon_RingBufferReplay(t *testing.T) {
 	// Detach client 1
 	detachMsg := Msg{Type: MsgDetach}
 	encoded, _ = Encode(detachMsg)
-	conn1.Write(encoded)
-	conn1.Close()
+	writeTestConn(t, conn1, encoded)
+	closeTestConn(t, conn1)
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -308,7 +346,7 @@ func TestDaemon_RingBufferReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect client 2: %v", err)
 	}
-	defer conn2.Close()
+	defer closeTestConn(t, conn2)
 	sendAttach(t, conn2)
 
 	scanner2 := bufio.NewScanner(conn2)
@@ -348,7 +386,7 @@ func TestDaemon_ConcurrentAttachRejection(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -363,7 +401,9 @@ func TestDaemon_ConcurrentAttachRejection(t *testing.T) {
 
 	daemonDone := make(chan struct{})
 	go func() {
-		RunDaemon(ctx, cfg)
+		if err := RunDaemon(ctx, cfg); err != nil {
+			t.Logf("daemon error: %v", err)
+		}
 		close(daemonDone)
 	}()
 
@@ -374,7 +414,7 @@ func TestDaemon_ConcurrentAttachRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect client 1: %v", err)
 	}
-	defer conn1.Close()
+	defer closeTestConn(t, conn1)
 	sendAttach(t, conn1)
 
 	scanner1 := bufio.NewScanner(conn1)
@@ -387,7 +427,7 @@ func TestDaemon_ConcurrentAttachRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect client 2: %v", err)
 	}
-	defer conn2.Close()
+	defer closeTestConn(t, conn2)
 
 	scanner2 := bufio.NewScanner(conn2)
 	// Should receive MsgError about concurrent attach
@@ -415,7 +455,7 @@ func TestDaemon_AgentExitPropagation(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -432,7 +472,9 @@ func TestDaemon_AgentExitPropagation(t *testing.T) {
 
 	daemonDone := make(chan struct{})
 	go func() {
-		RunDaemon(ctx, cfg)
+		if err := RunDaemon(ctx, cfg); err != nil {
+			t.Logf("daemon error: %v", err)
+		}
 		close(daemonDone)
 	}()
 
@@ -443,7 +485,7 @@ func TestDaemon_AgentExitPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
@@ -494,7 +536,7 @@ func TestDaemon_ResizePropagation(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -510,7 +552,9 @@ func TestDaemon_ResizePropagation(t *testing.T) {
 	daemonDone := make(chan struct{})
 	var sessionPtr *PTYSession
 	go func() {
-		RunDaemon(ctx, cfg)
+		if err := RunDaemon(ctx, cfg); err != nil {
+			t.Logf("daemon error: %v", err)
+		}
 		close(daemonDone)
 	}()
 
@@ -521,7 +565,7 @@ func TestDaemon_ResizePropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
@@ -536,7 +580,7 @@ func TestDaemon_ResizePropagation(t *testing.T) {
 		Cols: 120,
 	}
 	encoded, _ := Encode(resizeMsg)
-	conn.Write(encoded)
+	writeTestConn(t, conn, encoded)
 
 	// Note: We can't easily verify the resize was applied without more
 	// intrusive testing, but we can verify the message is accepted without error.
@@ -556,7 +600,7 @@ func TestDaemon_ContextCancellation(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 	// Use 'sleep' so agent doesn't exit immediately
@@ -619,7 +663,7 @@ func TestDaemon_SocketCleanup(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -634,7 +678,9 @@ func TestDaemon_SocketCleanup(t *testing.T) {
 
 	daemonDone := make(chan struct{})
 	go func() {
-		RunDaemon(ctx, cfg)
+		if err := RunDaemon(ctx, cfg); err != nil {
+			t.Logf("daemon error: %v", err)
+		}
 		close(daemonDone)
 	}()
 
@@ -717,7 +763,7 @@ func TestDaemon_MultipleInputOutput(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	socketPath := testSocketPath(t, "test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -732,7 +778,9 @@ func TestDaemon_MultipleInputOutput(t *testing.T) {
 
 	daemonDone := make(chan struct{})
 	go func() {
-		RunDaemon(ctx, cfg)
+		if err := RunDaemon(ctx, cfg); err != nil {
+			t.Logf("daemon error: %v", err)
+		}
 		close(daemonDone)
 	}()
 
@@ -742,7 +790,7 @@ func TestDaemon_MultipleInputOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 	sendAttach(t, conn)
 
 	scanner := bufio.NewScanner(conn)
@@ -764,7 +812,7 @@ func TestDaemon_MultipleInputOutput(t *testing.T) {
 				Data: EncodeData([]byte(input)),
 			}
 			encoded, _ := Encode(msg)
-			conn.Write(encoded)
+			writeTestConn(t, conn, encoded)
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()

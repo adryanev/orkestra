@@ -26,7 +26,8 @@ var stopCmd = &cobra.Command{
 			if process.IdentityMatches(session.PTY.DaemonPID, session.PTY.DaemonPGID, session.PTY.DaemonStart) {
 				// Daemon is still alive: terminate its process group.
 				if err := process.TerminateGroup(session.PTY.DaemonPGID, 5*time.Second); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to terminate PTY daemon for workspace %s: %v\n", stopWorkspace, err)
+					emitError(fmt.Errorf("failed to terminate PTY daemon for workspace %s: %w", stopWorkspace, err))
+					return
 				}
 			}
 			// Remove socket (idempotent: ignore errors if already gone).

@@ -2,6 +2,7 @@
 package pty
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/acarl005/stripansi"
@@ -98,13 +99,14 @@ var dangerousPatterns = []struct {
 			hasPipe := false
 			hasShell := false
 			for i, t := range tokens {
-				if t == "curl" || t == "wget" {
+				base := normalizeExecutable(t)
+				if base == "curl" || base == "wget" {
 					hasCurlOrWget = true
 				}
 				if t == "|" {
 					hasPipe = true
 				}
-				if t == "bash" || t == "sh" || t == "zsh" || t == "fish" {
+				if base == "bash" || base == "sh" || base == "zsh" || base == "fish" {
 					hasShell = true
 				}
 				// Check for curl | bash pattern
@@ -167,7 +169,7 @@ func ClassifyRisk(command string) risk.Level {
 		return Safe
 	}
 
-	baseCommand := tokens[0]
+	baseCommand := normalizeExecutable(tokens[0])
 
 	// Check for dangerous commands first (exact match or prefix for dotted commands like mkfs.ext4)
 	if dangerousCommands[baseCommand] {
@@ -213,6 +215,13 @@ func ClassifyRisk(command string) risk.Level {
 
 	// Default to safe
 	return Safe
+}
+
+func normalizeExecutable(token string) string {
+	if token == "" {
+		return ""
+	}
+	return filepath.Base(token)
 }
 
 // tokenize splits a command string into tokens, handling quotes and escapes.

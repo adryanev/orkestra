@@ -18,22 +18,22 @@ func extractCommand(line string) string {
 
 func TestDetectPrompt_ClaudeBashCommand(t *testing.T) {
 	tests := []struct {
-		name            string
-		line            string
-		wantDetected    bool
-		wantAgent       string
-		wantCommand     string
+		name         string
+		line         string
+		wantDetected bool
+		wantAgent    string
+		wantCommand  string
 	}{
 		{
 			name:         "Claude bash command with newline",
-			line:         "Allow claude to execute this Bash command?\n  git status",
+			line:         "Allow claude to execute this Bash command?\n  git status\n[Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "git status",
 		},
 		{
 			name:         "Claude bash command inline",
-			line:         "Allow claude to execute this Bash command? git status",
+			line:         "Allow claude to execute this Bash command? git status [Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "git status",
@@ -47,21 +47,21 @@ func TestDetectPrompt_ClaudeBashCommand(t *testing.T) {
 		},
 		{
 			name:         "Claude bash command case insensitive",
-			line:         "Allow Claude to execute this Bash command? ls -la",
+			line:         "Allow Claude to execute this Bash command? ls -la [Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "ls -la",
 		},
 		{
 			name:         "Claude bash command with extra spaces",
-			line:         "Allow  claude  to  execute  this  Bash  command?   docker ps",
+			line:         "Allow  claude  to  execute  this  Bash  command?   docker ps [Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "docker ps",
 		},
 		{
 			name:         "Claude bash command multiline format",
-			line:         "Allow claude to execute this Bash command?\n  curl -s https://example.com",
+			line:         "Allow claude to execute this Bash command?\n  curl -s https://example.com\n[Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "curl -s https://example.com",
@@ -86,11 +86,11 @@ func TestDetectPrompt_ClaudeBashCommand(t *testing.T) {
 
 func TestDetectPrompt_ClaudeMCPTool(t *testing.T) {
 	tests := []struct {
-		name            string
-		line            string
-		wantDetected    bool
-		wantAgent       string
-		wantCommand     string
+		name         string
+		line         string
+		wantDetected bool
+		wantAgent    string
+		wantCommand  string
 	}{
 		{
 			name:         "Claude MCP tool call",
@@ -223,6 +223,10 @@ func TestDetectPrompt_NonPrompts(t *testing.T) {
 			line: "On branch main",
 		},
 		{
+			name: "Claude bash prompt without approval token",
+			line: "Allow claude to execute this Bash command? git status",
+		},
+		{
 			name: "Error message",
 			line: "Error: command not found",
 		},
@@ -272,7 +276,7 @@ func TestIsPermissionPrompt(t *testing.T) {
 	}{
 		{
 			name: "Claude prompt",
-			line: "Allow claude to execute this Bash command? git status",
+			line: "Allow claude to execute this Bash command? git status [Y/n]",
 			want: true,
 		},
 		{
@@ -314,7 +318,7 @@ func TestExtractCommand(t *testing.T) {
 	}{
 		{
 			name: "Claude bash command",
-			line: "Allow claude to execute this Bash command? git status",
+			line: "Allow claude to execute this Bash command? git status [Y/n]",
 			want: "git status",
 		},
 		{
@@ -350,15 +354,15 @@ func TestExtractCommand(t *testing.T) {
 
 func TestDetectPrompt_ComplexCommands(t *testing.T) {
 	tests := []struct {
-		name            string
-		line            string
-		wantDetected    bool
-		wantAgent       string
-		wantCommand     string
+		name         string
+		line         string
+		wantDetected bool
+		wantAgent    string
+		wantCommand  string
 	}{
 		{
 			name:         "Command with pipes",
-			line:         "Allow claude to execute this Bash command? cat file.txt | grep error",
+			line:         "Allow claude to execute this Bash command? cat file.txt | grep error [Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "cat file.txt | grep error",
@@ -372,7 +376,7 @@ func TestDetectPrompt_ComplexCommands(t *testing.T) {
 		},
 		{
 			name:         "Command with quotes",
-			line:         "Allow claude to execute this Bash command? git commit -m \"Initial commit\"",
+			line:         "Allow claude to execute this Bash command? git commit -m \"Initial commit\" [Y/n]",
 			wantDetected: true,
 			wantAgent:    "claude",
 			wantCommand:  "git commit -m \"Initial commit\"",

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"github.com/adryanev/orkestra/pkg/env"
 	"github.com/adryanev/orkestra/pkg/gitauth"
@@ -16,8 +17,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// unixSocketMaxLen is the platform limit for Unix socket paths.
-const unixSocketMaxLen = 108
+// unixSocketMaxLen reserves one byte for the sockaddr_un NUL terminator.
+var unixSocketMaxLen = func() int {
+	if runtime.GOOS == "darwin" {
+		return 103
+	}
+	return 107
+}()
 
 func ptySocketPathForWorkspace(workspaceID string) (string, error) {
 	socketPath := filepath.Join(configDir, "pty", workspaceID+".sock")
@@ -127,14 +133,14 @@ var ptyDaemonCmd = &cobra.Command{
 			AgentCmd:    agentCmd,
 			RingSize:    64 * 1024, // 64KB ring buffer
 			Manager:     workspaceManager,
+			ExitCode:    new(int),
 		}
 
 		if err := pty.RunDaemon(context.Background(), cfg); err != nil {
 			emitError(fmt.Errorf("PTY daemon failed: %w", err))
 		}
 
-		// Exit with agent's exit code (handled by RunDaemon's Wait)
-		os.Exit(0)
+		os.Exit(*cfg.ExitCode)
 	},
 }
 
@@ -150,7 +156,7 @@ func buildAgentCommand(
 	effort string,
 ) (*exec.Cmd, error) {
 	// Resolve binary path
-	binPath := resolveBinary(agent, shellEnv)
+	binPath := runner.ResolveBinary(agent, shellEnv)
 
 	// Build agent arguments
 	var args []string
@@ -187,7 +193,7 @@ func buildAgentCommand(
 	}
 
 	// Build environment
-	cmdEnv := composeEnv(shellEnv, token)
+	cmdEnv := runner.ComposeEnv(shellEnv, token)
 
 	// Create command
 	cmd := exec.Command(binPath, args...)
@@ -197,55 +203,6 @@ func buildAgentCommand(
 	// Note: SysProcAttr for Setsid is set by pty.RunDaemon, not here
 
 	return cmd, nil
-}
-
-// resolveBinary returns the absolute path to the agent binary from the captured
-// shell environment, falling back to the bare command name.
-func resolveBinary(agent runner.AgentType, shell *env.ShellEnv) string {
-	if shell != nil {
-		switch agent {
-		case runner.Claude:
-			if shell.ClaudePath != "" {
-				return shell.ClaudePath
-			}
-		case runner.Codex:
-			if shell.CodexPath != "" {
-				return shell.CodexPath
-			}
-		}
-	}
-	if agent == runner.Codex {
-		return "codex"
-	}
-	return "claude"
-}
-
-// composeEnv builds the child environment: the orkestra process environment,
-// overlaid with captured login-shell variables, overlaid with GH_TOKEN. Keys
-// are deduplicated (last writer wins) so the child sees one value per key.
-func composeEnv(shell *env.ShellEnv, token string) []string {
-	merged := make(map[string]string)
-	for _, kv := range os.Environ() {
-		for i := 0; i < len(kv); i++ {
-			if kv[i] == '=' {
-				merged[kv[:i]] = kv[i+1:]
-				break
-			}
-		}
-	}
-	if shell != nil {
-		for k, v := range shell.AllVars {
-			merged[k] = v
-		}
-	}
-	if token != "" {
-		merged["GH_TOKEN"] = token
-	}
-	out := make([]string, 0, len(merged))
-	for k, v := range merged {
-		out = append(out, k+"="+v)
-	}
-	return out
 }
 
 func init() {

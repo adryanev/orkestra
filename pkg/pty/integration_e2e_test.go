@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ func TestIntegration_DaemonClientEcho(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "integration-test.sock")
+	socketPath := testSocketPath(t, "integration-test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -70,7 +69,7 @@ func TestIntegration_DaemonClientEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect to daemon: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	scanner := bufio.NewScanner(conn)
 	sendAttach(t, conn)
@@ -113,7 +112,7 @@ func TestIntegration_DaemonClientEcho(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 
 	for time.Now().Before(deadline) && !outputReceived {
-		conn.SetReadDeadline(deadline)
+		setReadDeadlineForConnTest(t, conn, deadline)
 		if !scanner.Scan() {
 			if scanner.Err() != nil {
 				t.Fatalf("scanner error while waiting for output: %v", scanner.Err())
@@ -155,11 +154,11 @@ func TestIntegration_DaemonClientEcho(t *testing.T) {
 	// Step 5: Send detach message
 	detachMsg := Msg{Type: MsgDetach}
 	encoded, _ = Encode(detachMsg)
-	conn.Write(encoded)
+	writeTestConn(t, conn, encoded)
 	t.Logf("✓ Sent MsgDetach")
 
 	// Step 6: Close connection
-	conn.Close()
+	closeTestConn(t, conn)
 	t.Logf("✓ Closed client connection")
 
 	// Step 7: Stop daemon by canceling context
@@ -185,7 +184,7 @@ func TestIntegration_MultipleInputOutputCycles(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "multi-cycle-test.sock")
+	socketPath := testSocketPath(t, "multi-cycle-test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -225,14 +224,14 @@ func TestIntegration_MultipleInputOutputCycles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	scanner := bufio.NewScanner(conn)
 	sendAttach(t, conn)
 
 	// Consume initial messages (MsgReady and optional MsgBuffer)
 	initialMsgsRead := 0
-	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	setReadDeadlineForConnTest(t, conn, time.Now().Add(500*time.Millisecond))
 	for scanner.Scan() && initialMsgsRead < 2 {
 		msg, err := Decode(scanner.Bytes())
 		if err != nil {
@@ -248,7 +247,7 @@ func TestIntegration_MultipleInputOutputCycles(t *testing.T) {
 	}
 
 	// Clear deadline and scanner error for actual test
-	conn.SetReadDeadline(time.Time{})
+	setReadDeadlineForConnTest(t, conn, time.Time{})
 	if scanner.Err() != nil {
 		scanner = bufio.NewScanner(conn)
 	}
@@ -277,7 +276,7 @@ func TestIntegration_MultipleInputOutputCycles(t *testing.T) {
 		deadline := time.Now().Add(1 * time.Second)
 
 		for time.Now().Before(deadline) && !outputReceived {
-			conn.SetReadDeadline(deadline)
+			setReadDeadlineForConnTest(t, conn, deadline)
 			if !scanner.Scan() {
 				break
 			}
@@ -309,8 +308,8 @@ func TestIntegration_MultipleInputOutputCycles(t *testing.T) {
 	// Clean up
 	detachMsg := Msg{Type: MsgDetach}
 	encoded, _ := Encode(detachMsg)
-	conn.Write(encoded)
-	conn.Close()
+	writeTestConn(t, conn, encoded)
+	closeTestConn(t, conn)
 
 	cancel()
 	<-daemonDone
@@ -322,7 +321,7 @@ func TestIntegration_ClientReconnect(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "reconnect-test.sock")
+	socketPath := testSocketPath(t, "reconnect-test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -367,9 +366,9 @@ func TestIntegration_ClientReconnect(t *testing.T) {
 	sendAttach(t, conn1)
 	// Read MsgReady and optional MsgBuffer
 	scanner1.Scan() // MsgReady
-	conn1.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	setReadDeadlineForConnTest(t, conn1, time.Now().Add(200*time.Millisecond))
 	scanner1.Scan() // MsgBuffer or timeout
-	conn1.SetReadDeadline(time.Time{})
+	setReadDeadlineForConnTest(t, conn1, time.Time{})
 
 	// Send test data that should be buffered
 	testData := "data that should be buffered\n"
@@ -378,18 +377,18 @@ func TestIntegration_ClientReconnect(t *testing.T) {
 		Data: EncodeData([]byte(testData)),
 	}
 	encoded, _ := Encode(inputMsg)
-	conn1.Write(encoded)
+	writeTestConn(t, conn1, encoded)
 
 	// Wait for output confirmation
 	deadline := time.Now().Add(1 * time.Second)
-	conn1.SetReadDeadline(deadline)
+	setReadDeadlineForConnTest(t, conn1, deadline)
 	scanner1.Scan()
 
 	// Detach first client
 	detachMsg := Msg{Type: MsgDetach}
 	encoded, _ = Encode(detachMsg)
-	conn1.Write(encoded)
-	conn1.Close()
+	writeTestConn(t, conn1, encoded)
+	closeTestConn(t, conn1)
 
 	t.Logf("✓ First client detached")
 
@@ -401,7 +400,7 @@ func TestIntegration_ClientReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect second client: %v", err)
 	}
-	defer conn2.Close()
+	defer closeTestConn(t, conn2)
 
 	scanner2 := bufio.NewScanner(conn2)
 	sendAttach(t, conn2)
@@ -438,8 +437,8 @@ func TestIntegration_ClientReconnect(t *testing.T) {
 	// Clean up
 	detachMsg = Msg{Type: MsgDetach}
 	encoded, _ = Encode(detachMsg)
-	conn2.Write(encoded)
-	conn2.Close()
+	writeTestConn(t, conn2, encoded)
+	closeTestConn(t, conn2)
 
 	cancel()
 	<-daemonDone
@@ -451,7 +450,7 @@ func TestIntegration_AgentExitPropagation(t *testing.T) {
 	mgr, tmpDir := setupTestManager(t)
 	wsID := createTestWorkspace(t, mgr, tmpDir)
 
-	socketPath := filepath.Join(tmpDir, "exit-test.sock")
+	socketPath := testSocketPath(t, "exit-test.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -494,7 +493,7 @@ func TestIntegration_AgentExitPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	scanner := bufio.NewScanner(conn)
 	sendAttach(t, conn)
@@ -504,7 +503,7 @@ func TestIntegration_AgentExitPropagation(t *testing.T) {
 	receivedExitCode := 0
 	deadline := time.Now().Add(3 * time.Second)
 
-	conn.SetReadDeadline(deadline)
+	setReadDeadlineForConnTest(t, conn, deadline)
 	for scanner.Scan() {
 		msg, err := Decode(scanner.Bytes())
 		if err != nil {

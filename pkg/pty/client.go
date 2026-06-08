@@ -81,7 +81,7 @@ func RunAttach(ctx context.Context, socketPath string, stdinFd int, stdout io.Wr
 	if err != nil {
 		return fmt.Errorf("failed to connect to PTY daemon: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Get current terminal size
 	rows, cols, err := CurrentSize(uintptr(stdinFd))
@@ -145,15 +145,18 @@ func RunAttach(ctx context.Context, socketPath string, stdinFd int, stdout io.Wr
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, 3)
+	stdin := os.NewFile(uintptr(stdinFd), "/dev/stdin")
+
+	go func() {
+		<-attachCtx.Done()
+		_ = conn.Close()
+	}()
 
 	// Goroutine A: stdin → DetachDetector → MsgInput/MsgDetach
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		defer cancel() // Signal other goroutines on exit
 
 		detector := NewDetachDetector()
-		stdin := os.NewFile(uintptr(stdinFd), "/dev/stdin")
 		buf := make([]byte, 1024)
 
 		for {
@@ -168,7 +171,9 @@ func RunAttach(ctx context.Context, socketPath string, stdinFd int, stdout io.Wr
 				// Scan for detach sequence
 				var filtered []byte
 				for i := 0; i < n; i++ {
-					if detector.Feed(buf[i]) {
+					b := buf[i]
+					wasPending := detector.seenFirst
+					if detector.Feed(b) {
 						// Detach sequence complete
 						detachMsg := Msg{Type: MsgDetach}
 						encoded, encErr := Encode(detachMsg)
@@ -177,10 +182,17 @@ func RunAttach(ctx context.Context, socketPath string, stdinFd int, stdout io.Wr
 						}
 						return
 					}
-					// Only include non-first-byte or reset bytes
-					if !detector.seenFirst || buf[i] != detachByte1 {
-						filtered = append(filtered, buf[i])
+					if wasPending {
+						filtered = append(filtered, detachByte1)
+						if !detector.seenFirst {
+							filtered = append(filtered, b)
+						}
+						continue
 					}
+					if detector.seenFirst {
+						continue
+					}
+					filtered = append(filtered, b)
 				}
 
 				// Send filtered input to daemon
